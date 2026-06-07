@@ -1,27 +1,14 @@
-FROM python:3.12-slim
+FROM 127.0.0.1:5000/zodiac/zodiac-python-base:1.0
 
-WORKDIR /app
+# 覆盖默认端口
+ENV UVICORN_PORT=16910
 
-# 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# 安装 UV
-RUN pip install uv
-
-# 复制依赖文件
-COPY pyproject.toml uv.lock* ./
-
-# 安装 Python 依赖
-RUN uv sync --frozen
-
-# 复制应用代码
-COPY . .
-
-# 创建日志目录
-RUN mkdir -p logs
-
-EXPOSE 8000
-
-CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 先复制依赖文件（利用 Docker 层缓存）
+COPY ./application/pyproject.toml /app/
+COPY ./application/uv.lock /app/
+# 安装依赖（如果 pyproject.toml 或 uv.lock 没变，这一层会使用缓存）
+RUN uv sync --frozen --no-dev
+# 再复制所有源代码到工作目录
+COPY ./application/. /app
+# 设置容器启动入口
+ENTRYPOINT ["/app/python-app-start.sh"]
