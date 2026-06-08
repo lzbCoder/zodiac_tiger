@@ -13,8 +13,9 @@ _INIT_SQL = Path(__file__).parent / "init_db.sql"
 
 
 def _get_database_url() -> str:
+    import urllib.parse
     return (
-        f"postgresql+asyncpg://{settings.PG_USER}:{settings.PG_PASSWORD}"
+        f"postgresql+asyncpg://{settings.PG_USER}:{urllib.parse.quote_plus(settings.PG_PASSWORD)}"
         f"@{settings.PG_HOST}:{settings.PG_PORT}/{settings.PG_DATABASE}"
     )
 
