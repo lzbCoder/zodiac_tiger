@@ -1,3 +1,5 @@
+import urllib.parse
+
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from loguru import logger
 
@@ -50,7 +52,7 @@ class CheckpointRepository:
             from app.config import settings
             from sqlalchemy.ext.asyncio import create_async_engine
             maint_dsn = (
-                f"postgresql+asyncpg://{settings.PG_USER}:{settings.PG_PASSWORD}"
+                f"postgresql+asyncpg://{settings.PG_USER}:{urllib.parse.quote_plus(settings.PG_PASSWORD)}"
                 f"@{settings.PG_HOST}:{settings.PG_PORT}/{settings.PG_DATABASE}"
             )
             self._maint_engine = create_async_engine(
