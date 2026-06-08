@@ -50,9 +50,6 @@ async def _detect_intent(message: str, state: AgentState) -> tuple[str, str | No
         "请只回复两个单词：intent format（如 travel pdf 或 chat none）"
     )
 
-    if state.get("recalled_memories"):
-        prompt = state["recalled_memories"] + "\n" + prompt
-
     resp = await llm.ainvoke(prompt)
     parts = resp.content.strip().lower().split()
     intent = parts[0] if parts else "chat"
