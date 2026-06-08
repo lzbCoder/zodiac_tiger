@@ -94,10 +94,10 @@ async def recall_memories(user_id: str, query: str, limit: int = 5) -> list[dict
                 "summary": hit.entity.get("summary", ""),
                 "importance": hit.entity.get("importance", 0.5),
                 "metadata": hit.entity.get("metadata", "{}"),
-                "score": hit.score,
+                "score": hit.score, # Milvus 向量搜索引擎的 COSINE 相似度评分
             })
 
-    # 按 importance × score 综合排序
+    # 按 importance × score 综合排序：既保证语义相关（score），又优先展示重要信息（importance）
     memories.sort(key=lambda m: m["importance"] * m["score"], reverse=True)
     return memories
 
