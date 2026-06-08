@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -62,7 +63,10 @@ class Settings:
 
     @property
     def pg_dsn(self) -> str:
-        return f"postgresql://{self.PG_USER}:{self.PG_PASSWORD}@{self.PG_HOST}:{self.PG_PORT}/{self.PG_DATABASE}"
+        return (
+            f"postgresql://{self.PG_USER}:{urllib.parse.quote_plus(self.PG_PASSWORD)}"
+            f"@{self.PG_HOST}:{self.PG_PORT}/{self.PG_DATABASE}"
+        )
 
 
 settings = Settings()

@@ -174,8 +174,9 @@ _repo: CheckpointRepository | None = None
 
 
 def _build_conn_string() -> str:
+    import urllib.parse
     return (
-        f"postgresql://{settings.PG_USER}:{settings.PG_PASSWORD}"
+        f"postgresql://{settings.PG_USER}:{urllib.parse.quote_plus(settings.PG_PASSWORD)}"
         f"@{settings.PG_HOST}:{settings.PG_PORT}/{settings.PG_DATABASE}"
         f"?options=-c%20search_path%3D{settings.PG_SCHEMA}"
     )
