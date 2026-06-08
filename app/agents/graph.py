@@ -54,8 +54,10 @@ def _build_workflow() -> StateGraph:
         },
     )
 
-    workflow.add_edge("chat_agent", "memory_extraction")
-
+    workflow.add_conditional_edges(
+        "chat_agent", route_by_format,
+        {"document_agent": "document_agent", END: "memory_extraction"},
+    )
     workflow.add_conditional_edges(
         "report", route_by_format,
         {"document_agent": "document_agent", END: "memory_extraction"},
