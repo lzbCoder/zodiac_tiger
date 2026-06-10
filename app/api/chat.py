@@ -170,10 +170,9 @@ async def chat_stream(req: ChatRequest):
                 for ev in _yield_progress("处理完成", events_buf):
                     yield ev
 
-            # 10. 结果事件（含 charts）+ 流结束
-            charts = json.dumps(snap.values.get("charts", []) if snap and snap.values else [], ensure_ascii=False)
+            # 10. 结果事件 + 流结束
             yield AgentEvent(event_type="result", name="chat", status="completed",
-                             content=full_content, metadata={"chat_id": chat_id, "charts": charts}).to_sse()
+                             content=full_content, metadata={"chat_id": chat_id}).to_sse()
             yield AgentEvent(event_type="done", name="stream", status="completed").to_sse()
 
             # 11. 异步后处理：摘要 + 执行日志入库
@@ -237,10 +236,9 @@ async def chat_resume(req: ResumeRequest):
                 for ev in _yield_progress("处理完成", events_buf):
                     yield ev
 
-            # 9. 结果（含 charts）+ 结束
-            charts = json.dumps(snap.values.get("charts", []) if snap and snap.values else [], ensure_ascii=False)
+            # 9. 结果 + 结束
             yield AgentEvent(event_type="result", name="resume", status="completed",
-                             content=full_content, metadata={"charts": charts}).to_sse()
+                             content=full_content).to_sse()
             yield AgentEvent(event_type="done", name="stream", status="completed").to_sse()
 
             # 10. 异步收尾

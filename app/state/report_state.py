@@ -38,5 +38,3 @@ class ReportState(AgentState):
     final_report: NotRequired[str]
     """生成的最终数据分析报告内容。"""
 
-    charts: NotRequired[list[dict]]
-    """图表 ECharts option 列表，由 observation_node 构建，直达前端渲染。"""

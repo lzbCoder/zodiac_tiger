@@ -1,6 +1,5 @@
 """数据分析专用工具集"""
 
-import json
 from langchain_core.tools import tool
 from app.tools.web_search import web_search
 
@@ -31,34 +30,6 @@ def read_excel(file_path: str) -> str:
         return f"读取失败: {e}"
 
 
-_CATEGORIES = ["品类A", "品类B", "品类C", "品类D"]
-_PIE_DATA = [{"name": "品类A", "value": 30}, {"name": "品类B", "value": 50}, {"name": "品类C", "value": 20}]
-_BAR_DATA = [{"name": "品类A", "value": 30}, {"name": "品类B", "value": 50}, {"name": "品类C", "value": 20}, {"name": "品类D", "value": 45}]
-
-
-@tool
-def generate_chart(data_desc: str, chart_type: str = "bar") -> str:
-    """生成图表配置（bar/line/pie）。返回 ECharts option JSON。"""
-    if chart_type == "pie":
-        series_data = _PIE_DATA
-    else:
-        series_data = _BAR_DATA
-
-    series = {"name": data_desc[:20], "type": chart_type, "data": series_data, "label": {"show": True}}
-    if chart_type == "pie":
-        series["label"]["formatter"] = "{b}: {d}%"
-
-    option = {
-        "title": {"text": data_desc[:40]},
-        "tooltip": {"trigger": "axis" if chart_type != "pie" else "item"},
-        "series": [series],
-    }
-    if chart_type != "pie":
-        option["xAxis"] = {"type": "category", "data": _CATEGORIES}
-        option["yAxis"] = {"type": "value"}
-    return json.dumps({"option": option}, ensure_ascii=False)
-
-
 @tool
 def tavily_search_report(query: str) -> str:
     """联网搜索行业数据、市场报告、背景信息。"""
@@ -71,4 +42,4 @@ def tavily_search_report(query: str) -> str:
     return str(result)
 
 
-REPORT_TOOLS = [query_sql, read_excel, generate_chart, tavily_search_report]
+REPORT_TOOLS = [query_sql, read_excel, tavily_search_report]

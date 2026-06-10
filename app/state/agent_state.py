@@ -29,8 +29,6 @@ class AgentState(MessagesState):
     generate_format: NotRequired[str]
     """目标文件格式 pdf/docx/xlsx/md，dispatcher 提取，业务 Agent 透传。"""
 
-    charts: NotRequired[list[dict]]
-    """图表 ECharts option 列表（由子图透传至前端渲染）。"""
 
     extracted_count: NotRequired[int]
     """本轮提取并保存的长期记忆条数。memory_extraction 写入，可通过 SSE 下发给前端。"""

@@ -52,15 +52,15 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
 
 可用工具：
 - query_sql：执行SQL查询，参数 {{"sql": "SELECT..."}}
-- read_excel：读取Excel文件，参数 {{"file_path": "路径"}}
-- generate_chart：生成图表，参数 {{"data_desc": "描述", "chart_type": "bar/line/pie"}}{search_tool_desc}
+- read_excel：读取Excel文件，参数 {{"file_path": "路径"}}{search_tool_desc}
 
 规则：
 1. 信息不足 → 调用工具查询
 2. 信息足够 → finish=true, action=null
 3. 超过 {_MAX_LOOPS} 轮强制结束
 4. 只返回 JSON，不要其他内容
-提示：如需从多个维度展示数据，可多次调用 generate_chart 生成不同类型（bar/pie）的图表。"""
+5. 在最终报告中，用 Markdown 表格呈现数据，每张表格都包含表头和数据行
+提示：如需从多个维度展示数据，可在报告中用多张表格展示。"""
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
     resp = await llm.ainvoke(prompt)
@@ -125,24 +125,9 @@ async def observation_node(state: ReportState, config: RunnableConfig) -> dict:
     }
     observations = list(state.get("observations", [])) + [obs]
 
-    # 单独提取图表配置
-    charts: list[dict] = []
-    if tc.get("name") == "generate_chart" and isinstance(result, str):
-        try:
-            data = json.loads(result)
-            if isinstance(data, dict) and data.get("option"):
-                data["option"]["_data_desc"] = tc.get("args", {}).get("data_desc", "")
-                charts.append(data["option"])
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-    existing_charts = list(state.get("charts", []))
-    existing_charts.extend(charts)
-
     return {
         "observations": observations,
         "react_loop_count": state.get("react_loop_count", 0),
-        "charts": existing_charts if charts else state.get("charts", []),
     }
 
 
@@ -152,33 +137,25 @@ async def report_generator_node(state: ReportState, config: RunnableConfig) -> d
     from app.factory.llm_factory import create_llm
     from app.config import settings
 
-    # 对工具结果做摘要，chart JSON 替换为文字描述（避免 LLM 将 JSON 写入报告正文）
     raw_obs = state.get("observations", [])
-    summarized_obs = []
-    for o in raw_obs:
-        if o.get("tool") == "generate_chart":
-            data_desc = o.get("args", {}).get("data_desc", "")
-            chart_type = o.get("args", {}).get("chart_type", "bar")
-            summarized_obs.append(f"[图表] {chart_type}图：{data_desc}")
-        else:
-            summarized_obs.append(f"{o.get('tool')}: {str(o.get('result', ''))[:200]}")
+    summarized_obs = [f"{o.get('tool')}: {str(o.get('result', ''))[:200]}" for o in raw_obs]
     obs_text = json.dumps(summarized_obs, ensure_ascii=False, indent=2)
-    has_charts = bool(state.get("charts", []))
-    chart_section = "\n## 图表展示" if has_charts else ""
-    rule = "\n\n规则：'图表展示'章节只写标题，不要写任何正文或说明，图表由系统自动渲染。不考虑图表内容。" if has_charts else "\n\n注意：不要输出任何图表相关章节（如图表展示、数据可视化等），本报告仅文字分析。"
     prompt = f"""你是资深数据分析师，请根据以下分析过程生成专业数据分析报告。
 
 任务：{state.get('task', '')}
 
 分析过程与数据：{obs_text}
 
-严格按以下格式输出，不要增加或减少章节：
 ## 分析摘要
 ## 关键发现
-## 数据详情{chart_section}
-## 行动建议{rule}
+## 数据详情
+## 行动建议
 
-请用 Markdown 输出。"""
+在「数据详情」章节中，用 Markdown 表格呈现具体数据，每张表格都需要：
+- 一个简洁的标题行说明该表内容（如"各品类销售额统计表"）
+- 包含表头和数据行
+请用 Markdown 输出。
+注：不要自行添加"图表展示"、"数据可视化"等标题，系统会自动渲染图表。"""
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
     resp = await llm.ainvoke(prompt)
@@ -187,7 +164,6 @@ async def report_generator_node(state: ReportState, config: RunnableConfig) -> d
         "generate_content": resp.content,
         "generate_format": state.get("generate_format", ""),
         "messages": [{"role": "ai", "content": resp.content}],
-        "charts": state.get("charts", []),
     }
 
 

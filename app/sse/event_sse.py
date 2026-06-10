@@ -256,18 +256,6 @@ async def parse_events(stream):
                 },
             )
 
-            # generate_chart 工具完成时额外 yield chart 事件，前端可流式接收
-            if name == "generate_chart":
-                try:
-                    chart_data = json.loads(output_str)
-                    if isinstance(chart_data, dict) and chart_data.get("option"):
-                        yield AgentEvent(
-                            event_type="chart", name="generate_chart",
-                            status="completed", content=json.dumps(chart_data["option"], ensure_ascii=False),
-                        )
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
         # --- retrieval: 检索事件 ---
         elif ev == "on_retriever_start":
             _node_starts[f"retriever:{name}"] = _now_ts()
