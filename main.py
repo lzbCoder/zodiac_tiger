@@ -22,6 +22,7 @@ from app.db.milvus import connect_milvus, init_collection
 from app.db.redis import get_redis, close_redis
 from app.db.checkpoint import get_checkpointer, close_checkpointer
 from app.skills.registry import SkillRegistry
+from app.services.cleanup_service import start_cleanup_task, stop_cleanup_task
 from app.agents.graph import build_graph, build_graph_with_checkpointer, set_agent_graph
 from app.api import chat, template, skill, mcp, file, settings as settings_router
 
@@ -78,8 +79,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"技能缓存刷新失败: {e}")
 
+    # 启动定时清理任务
+    start_cleanup_task()
+
     yield
     # 关闭时
+    await stop_cleanup_task()
     try:
         await close_checkpointer()
     except Exception:
