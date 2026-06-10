@@ -31,3 +31,9 @@ class AgentState(MessagesState):
 
     charts: NotRequired[list[dict]]
     """图表 ECharts option 列表（由子图透传至前端渲染）。"""
+
+    extracted_count: NotRequired[int]
+    """本轮提取并保存的长期记忆条数。memory_extraction 写入，可通过 SSE 下发给前端。"""
+
+    extracted_detail: NotRequired[str]
+    """本轮提取记忆的摘要文本，如 '[preference] 喜欢咖啡'，供调试与前端展示。"""

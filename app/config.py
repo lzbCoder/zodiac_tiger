@@ -44,6 +44,10 @@ class Settings:
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
     EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "1024"))
 
+    # Memory tuning
+    SUMMARY_TOKEN_THRESHOLD: int = int(os.getenv("SUMMARY_TOKEN_THRESHOLD", "6000"))
+    MEMORY_RECALL_LIMIT: int = int(os.getenv("MEMORY_RECALL_LIMIT", "5"))
+
     # User
     DEFAULT_USER_ID: str = os.getenv("DEFAULT_USER_ID", "admin")
 

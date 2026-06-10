@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 import uuid
@@ -12,6 +13,17 @@ from app.models.user_profile import UserProfile
 from app.utils.embedding import embed
 from app.config import settings
 
+# 各记忆类型的生存时间（毫秒）
+_TTL_MS: dict[str, int] = {
+    "event": 30 * 24 * 3600 * 1000,
+    "goal": 180 * 24 * 3600 * 1000,
+    "habit": 180 * 24 * 3600 * 1000,
+    "preference": 180 * 24 * 3600 * 1000,
+    "relationship": 180 * 24 * 3600 * 1000,
+}
+_DEFAULT_TTL_MS = 90 * 24 * 3600 * 1000
+_DEDUP_SCORE_THRESHOLD = 0.92
+
 
 async def save_memory(
     user_id: str,
@@ -23,24 +35,46 @@ async def save_memory(
     metadata: dict | None = None,
 ) -> None:
     embedding = await embed(summary or content)
-    memory_id = uuid.uuid4().hex
     timestamp_ms = int(time.time() * 1000)
 
     collection = get_episodic_collection()
-    collection.insert([{
-        "id": memory_id,
-        "user_id": user_id,
-        "session_id": session_id,
-        "memory_type": memory_type,
-        "content": content,
-        "summary": summary,
-        "embedding": embedding,
-        "importance": importance,
-        "timestamp": timestamp_ms,
-        "metadata": json.dumps(metadata or {}, ensure_ascii=False),
-        "expires_at": 0,
-    }])
-    collection.flush()
+
+    # 写入前去重：若已存在余弦相似度极高的记忆则跳过，避免重复积累
+    dedup_results = await asyncio.to_thread(
+        lambda: collection.search(
+            data=[embedding],
+            anns_field="embedding",
+            param={"metric_type": "COSINE", "params": {"nprobe": 16}},
+            limit=1,
+            expr=f'user_id == "{user_id}"',
+            output_fields=["importance"],
+        )
+    )
+    for hits in dedup_results:
+        for hit in hits:
+            if hit.score > _DEDUP_SCORE_THRESHOLD:
+                logger.debug(f"跳过重复记忆 (score={hit.score:.3f}): {summary}")
+                return
+
+    expires_at = timestamp_ms + _TTL_MS.get(memory_type, _DEFAULT_TTL_MS)
+    memory_id = uuid.uuid4().hex
+
+    await asyncio.to_thread(
+        lambda: collection.insert([{
+            "id": memory_id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "memory_type": memory_type,
+            "content": content,
+            "summary": summary,
+            "embedding": embedding,
+            "importance": importance,
+            "timestamp": timestamp_ms,
+            "metadata": json.dumps(metadata or {}, ensure_ascii=False),
+            "expires_at": expires_at,
+        }])
+    )
+    await asyncio.to_thread(collection.flush)
     logger.debug(f"记忆已保存: [{memory_type}] {summary}")
 
 
@@ -64,7 +98,6 @@ async def upsert_user_profile(
                 "value": value,
                 "source": source,
                 "confidence": confidence,
-                "updated_at": None,
             },
         )
         await session.execute(stmt)
@@ -75,13 +108,15 @@ async def recall_memories(user_id: str, query: str, limit: int = 5) -> list[dict
     embedding = await embed(query)
     collection = get_episodic_collection()
 
-    results = collection.search(
-        data=[embedding],
-        anns_field="embedding",
-        param={"metric_type": "COSINE", "params": {"nprobe": 16}},
-        limit=limit,
-        expr=f'user_id == "{user_id}"',
-        output_fields=["memory_type", "content", "summary", "importance", "metadata"],
+    results = await asyncio.to_thread(
+        lambda: collection.search(
+            data=[embedding],
+            anns_field="embedding",
+            param={"metric_type": "COSINE", "params": {"nprobe": 16}},
+            limit=limit,
+            expr=f'user_id == "{user_id}"',
+            output_fields=["memory_type", "content", "summary", "importance", "metadata", "timestamp"],
+        )
     )
 
     memories = []
@@ -94,7 +129,8 @@ async def recall_memories(user_id: str, query: str, limit: int = 5) -> list[dict
                 "summary": hit.entity.get("summary", ""),
                 "importance": hit.entity.get("importance", 0.5),
                 "metadata": hit.entity.get("metadata", "{}"),
-                "score": hit.score, # Milvus 向量搜索引擎的 COSINE 相似度评分
+                "timestamp": hit.entity.get("timestamp", 0),
+                "score": hit.score,  # Milvus COSINE 相似度评分
             })
 
     # 按 importance × score 综合排序：既保证语义相关（score），又优先展示重要信息（importance）

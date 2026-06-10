@@ -70,7 +70,8 @@ async def _generate_summary(messages: list, existing_summary: str) -> str:
 
 
 def _estimate_tokens(text: str) -> int:
-    return len(text) // 2
+    chinese = sum(1 for c in text if '一' <= c <= '鿿')
+    return chinese + (len(text) - chinese) // 4
 
 
 async def _get_max_version(session_id: str) -> int:
@@ -119,15 +120,11 @@ async def _save_summary(
         await session.commit()
 
 
-TOKEN_THRESHOLD = 6000
-
-
 def _estimate_messages_tokens(messages: list) -> int:
-    """估算 messages 列表的总 token 数（中文约 1 token/字，英文约 1 token/4字符，取平均 ~字符/2）。"""
     total = 0
     for m in messages:
         content = getattr(m, "content", "") or ""
-        total += len(content) // 2
+        total += _estimate_tokens(content)
     return total
 
 
@@ -174,7 +171,7 @@ async def summarize_and_prune(
         total_tokens = _estimate_messages_tokens(messages)
 
         # 1. 触发摘要的条件：总 token 超过阈值
-        if total_tokens > TOKEN_THRESHOLD:
+        if total_tokens > settings.SUMMARY_TOKEN_THRESHOLD:
             existing_summary = state.get("summary", "")
             await _run_summarization(messages, existing_summary, user_id, session_id, config)
 
