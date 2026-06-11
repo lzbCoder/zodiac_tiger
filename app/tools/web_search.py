@@ -15,7 +15,7 @@ def web_search(query: str) -> str:
     result = _tavily.invoke({"query": query})
     if isinstance(result, dict) and result.get("results"):
         return "\n\n".join(
-            f"[{r['title']}]({r['url']})\n{r.get('content', '')[:200]}"
+            f"[{r['title']}]({r['url']})\n{r.get('content', '')[:800]}"
             for r in result["results"][:5]
         )
     return str(result)

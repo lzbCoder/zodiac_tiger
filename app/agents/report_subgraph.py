@@ -35,7 +35,11 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
     from app.factory.llm_factory import create_llm
     from app.config import settings
 
-    obs_text = json.dumps(state.get("observations", []), ensure_ascii=False, indent=2)
+    brief_obs = [
+        {"tool": o.get("tool", "unknown"), "summary": str(o.get("result", ""))[:300]}
+        for o in state.get("observations", [])
+    ]
+    obs_text = json.dumps(brief_obs, ensure_ascii=False)
     loop = state.get("react_loop_count", 0)
     enable_search = config["configurable"].get("enable_search", False)
 
@@ -121,7 +125,7 @@ async def observation_node(state: ReportState, config: RunnableConfig) -> dict:
     obs = {
         "tool": tc.get("name", "unknown"),
         "args": tc.get("args", {}),
-        "result": result[:800],
+        "result": result[:3000],
     }
     observations = list(state.get("observations", [])) + [obs]
 
@@ -138,8 +142,10 @@ async def report_generator_node(state: ReportState, config: RunnableConfig) -> d
     from app.config import settings
 
     raw_obs = state.get("observations", [])
-    summarized_obs = [f"{o.get('tool')}: {str(o.get('result', ''))[:200]}" for o in raw_obs]
-    obs_text = json.dumps(summarized_obs, ensure_ascii=False, indent=2)
+    obs_sections = []
+    for o in raw_obs:
+        obs_sections.append(f"【{o.get('tool', 'unknown')}】\n{str(o.get('result', ''))}")
+    obs_text = "\n\n".join(obs_sections) if obs_sections else "无"
     prompt = f"""你是资深数据分析师，请根据以下分析过程生成专业数据分析报告。
 
 任务：{state.get('task', '')}

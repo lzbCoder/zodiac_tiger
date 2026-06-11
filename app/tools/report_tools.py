@@ -36,7 +36,7 @@ def tavily_search_report(query: str) -> str:
     result = web_search.invoke({"query": query})
     if isinstance(result, dict) and result.get("results"):
         return "\n".join(
-            f"[{r['title']}]({r.get('url','')})\n{r.get('content','')[:300]}"
+            f"[{r['title']}]({r.get('url','')})\n{r.get('content','')[:800]}"
             for r in result["results"][:5]
         )
     return str(result)
