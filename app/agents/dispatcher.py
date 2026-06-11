@@ -17,6 +17,11 @@ async def dispatcher_node(state: AgentState, config: RunnableConfig) -> dict:
     # 意图识别（调用 LLM）→ intent + format
     intent, output_format = await _detect_intent(user_message, state)
 
+    # 模糊提问检测（"能干什么"等兜底引导）
+    fuzzy_keywords = ["能干什么", "能做什么", "有什么功能", "你能做什么", "你会什么",
+                      "有什么能力", "介绍一下", "你能干嘛", "试试", "test"]
+    is_fuzzy = any(kw in user_message for kw in fuzzy_keywords)
+
     # 从 config 读取运行时上下文
     chat_id = config["configurable"]["chat_id"]
     skills = config["configurable"]["matched_skills"]
@@ -26,6 +31,8 @@ async def dispatcher_node(state: AgentState, config: RunnableConfig) -> dict:
     result: dict = {"intent": intent}
     if output_format:
         result["generate_format"] = output_format
+    if is_fuzzy:
+        result["is_fuzzy_intent"] = True
 
     return result
 

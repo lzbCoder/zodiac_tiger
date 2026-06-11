@@ -24,7 +24,7 @@ from app.db.checkpoint import get_checkpointer, close_checkpointer
 from app.skills.registry import SkillRegistry
 from app.services.cleanup_service import start_cleanup_task, stop_cleanup_task
 from app.agents.graph import build_graph, build_graph_with_checkpointer, set_agent_graph
-from app.api import chat, template, skill, mcp, file, settings as settings_router
+from app.api import chat, template, skill, mcp, file, settings as settings_router, intent_display
 
 
 @asynccontextmanager
@@ -125,6 +125,7 @@ app.include_router(skill.router, prefix="/api")
 app.include_router(mcp.router, prefix="/api")
 app.include_router(file.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
+app.include_router(intent_display.router, prefix="/api")
 
 
 @app.get("/")

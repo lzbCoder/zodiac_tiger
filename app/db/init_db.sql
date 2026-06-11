@@ -96,7 +96,26 @@ CREATE TABLE IF NOT EXISTS root.execution_log (
     create_time TIMESTAMP DEFAULT NOW()
 );
 
--- 9. 文件信息表
+-- 10. 用户侧意图能力展示配置表
+CREATE TABLE IF NOT EXISTS root.intent_display_config (
+    id          BIGSERIAL PRIMARY KEY,
+    intent_key  VARCHAR(64)  NOT NULL UNIQUE,
+    show_name   VARCHAR(64)  NOT NULL,
+    intent_desc TEXT         NOT NULL,
+    demo_input  TEXT         NOT NULL,
+    icon        VARCHAR(64),
+    sort        INT          NOT NULL DEFAULT 0,
+    enable      SMALLINT     NOT NULL DEFAULT 1,
+    create_time TIMESTAMP    NOT NULL DEFAULT NOW(),
+    update_time TIMESTAMP
+);
+
+INSERT INTO root.intent_display_config (intent_key, show_name, intent_desc, demo_input, icon, sort, enable)
+VALUES
+    ('travel', '🗺️ 智能旅游规划', '自定义出行人数、预算、游玩天数、出发与目的城市，自动结合天气、路线规划完整行程，支持导出PDF/Word文档', '2个人从郑州出发去青岛玩4天，预算6000元，帮我规划详细行程并生成文档', 'map', 1, 1),
+    ('report', '📊 智能数据分析报表', '上传Excel、CSV数据文件，自动完成数据清洗、统计研判、图表生成、问题分析，输出专业报告并导出文件', '分析上传的销售表格，找出近3个月销量下滑原因，生成Word报告', 'chart', 2, 1),
+    ('chat', '💬 通用智能问答', '支持文案写作、公文撰写、知识查询、思路梳理、日常咨询等全场景通用对话', '帮我写一份简洁的月度工作小结', 'chat', 3, 1)
+ON CONFLICT (intent_key) DO NOTHING;
 CREATE TABLE IF NOT EXISTS root.file_info (
     id              BIGSERIAL PRIMARY KEY,
     file_name       VARCHAR(255) NOT NULL,

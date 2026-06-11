@@ -30,6 +30,9 @@ class AgentState(MessagesState):
     """目标文件格式 pdf/docx/xlsx/md，dispatcher 提取，业务 Agent 透传。"""
 
 
+    is_fuzzy_intent: NotRequired[bool]
+    """模糊提问标记。dispatcher 检测到"能干什么"等模糊提问时写入 True，chat_agent 据此返回能力引导。"""
+
     extracted_count: NotRequired[int]
     """本轮提取并保存的长期记忆条数。memory_extraction 写入，可通过 SSE 下发给前端。"""
 
