@@ -14,8 +14,8 @@ INTENT_LABELS: dict[str, str] = {
 NODE_LABELS: dict[str, str] = {
     "memory_recall":      "记忆召回",
     "dispatcher":         "意图识别",
-    "report":             "报表生成",
-    "travel":             "旅游规划",
+    "report_agent":       "报表生成",
+    "travel_agent":       "旅游规划",
     "memory_extraction":  "记忆提取",
     "document_agent":     "文档生成",
     "chat_agent":         "对话聊天",

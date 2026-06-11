@@ -11,12 +11,12 @@ from app.agents.document_agent import document_agent_node
 from app.agents.chat_agent import chat_agent_node
 
 
-def route_by_intent(state: AgentState) -> Literal["chat_agent", "report", "travel"]:
+def route_by_intent(state: AgentState) -> Literal["chat_agent", "report_agent", "travel_agent"]:
     intent = state.get("intent", "chat")
     if intent == "report":
-        return "report"
+        return "report_agent"
     elif intent == "travel":
-        return "travel"
+        return "travel_agent"
     return "chat_agent"
 
 
@@ -30,8 +30,8 @@ def _build_workflow() -> StateGraph:
 
     workflow.add_node("memory_recall", memory_recall_node)
     workflow.add_node("dispatcher", dispatcher_node)
-    workflow.add_node("report", build_report_subgraph())  # 数据分析子图：继承主图 checkpointer
-    workflow.add_node("travel", build_travel_subgraph())  # 旅游规划子图：继承主图 checkpointer
+    workflow.add_node("report_agent", build_report_subgraph())  # 数据分析子图：继承主图 checkpointer
+    workflow.add_node("travel_agent", build_travel_subgraph())  # 旅游规划子图：继承主图 checkpointer
     workflow.add_node("chat_agent", chat_agent_node)
     workflow.add_node("document_agent", document_agent_node)
     workflow.add_node("memory_extraction", memory_extraction_node)
@@ -44,8 +44,8 @@ def _build_workflow() -> StateGraph:
         route_by_intent,
         {
             "chat_agent": "chat_agent",
-            "report": "report",
-            "travel": "travel",
+            "report_agent": "report_agent",
+            "travel_agent": "travel_agent",
         },
     )
 
@@ -54,11 +54,11 @@ def _build_workflow() -> StateGraph:
         {"document_agent": "document_agent", END: "memory_extraction"},
     )
     workflow.add_conditional_edges(
-        "report", route_by_format,
+        "report_agent", route_by_format,
         {"document_agent": "document_agent", END: "memory_extraction"},
     )
     workflow.add_conditional_edges(
-        "travel", route_by_format,
+        "travel_agent", route_by_format,
         {"document_agent": "document_agent", END: "memory_extraction"},
     )
 
