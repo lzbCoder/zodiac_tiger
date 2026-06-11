@@ -5,21 +5,18 @@ from app.state.agent_state import AgentState
 from app.agents.dispatcher import dispatcher_node
 from app.agents.report_subgraph import build_report_subgraph
 from app.agents.travel_subgraph import build_travel_subgraph
-from app.agents.code_agent import code_agent_node
 from app.agents.memory_recall import memory_recall_node
 from app.agents.memory_extraction import memory_extraction_node
 from app.agents.document_agent import document_agent_node
 from app.agents.chat_agent import chat_agent_node
 
 
-def route_by_intent(state: AgentState) -> Literal["chat_agent", "report", "travel", "code"]:
+def route_by_intent(state: AgentState) -> Literal["chat_agent", "report", "travel"]:
     intent = state.get("intent", "chat")
     if intent == "report":
         return "report"
     elif intent == "travel":
         return "travel"
-    elif intent == "code":
-        return "code"
     return "chat_agent"
 
 
@@ -35,7 +32,6 @@ def _build_workflow() -> StateGraph:
     workflow.add_node("dispatcher", dispatcher_node)
     workflow.add_node("report", build_report_subgraph())  # 数据分析子图：继承主图 checkpointer
     workflow.add_node("travel", build_travel_subgraph())  # 旅游规划子图：继承主图 checkpointer
-    workflow.add_node("code", code_agent_node)
     workflow.add_node("chat_agent", chat_agent_node)
     workflow.add_node("document_agent", document_agent_node)
     workflow.add_node("memory_extraction", memory_extraction_node)
@@ -50,7 +46,6 @@ def _build_workflow() -> StateGraph:
             "chat_agent": "chat_agent",
             "report": "report",
             "travel": "travel",
-            "code": "code",
         },
     )
 
@@ -64,10 +59,6 @@ def _build_workflow() -> StateGraph:
     )
     workflow.add_conditional_edges(
         "travel", route_by_format,
-        {"document_agent": "document_agent", END: "memory_extraction"},
-    )
-    workflow.add_conditional_edges(
-        "code", route_by_format,
         {"document_agent": "document_agent", END: "memory_extraction"},
     )
 

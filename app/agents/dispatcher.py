@@ -41,8 +41,7 @@ async def _detect_intent(message: str, state: AgentState) -> tuple[str, str | No
         "你是一个意图识别助手。根据用户输入，判断意图和输出格式。\n"
         "- chat: 普通闲聊对话\n"
         "- report: 数据查询、报表生成、数据分析\n"
-        "- travel: 旅游规划、行程安排、景点推荐\n"
-        "- code: 编写代码、技术问题、编程需求\n\n"
+        "- travel: 旅游规划、行程安排、景点推荐\n\n"
         "输出格式（仅当用户明确要求「生成/导出/下载」文件时才填）：pdf / docx / xlsx / md / html\n"
         "重要：用户说「不生成」「不需要文档」「只要文本」等否定词时，格式必须填 none\n"
         "如用户未指定或仅提及文档但不要求生成，输出 none\n\n"
@@ -53,7 +52,7 @@ async def _detect_intent(message: str, state: AgentState) -> tuple[str, str | No
     resp = await llm.ainvoke(prompt)
     parts = resp.content.strip().lower().split()
     intent = parts[0] if parts else "chat"
-    if intent not in ("chat", "report", "travel", "code"):
+    if intent not in ("chat", "report", "travel"):
         intent = "chat"
     output_format = parts[1] if len(parts) > 1 and parts[1] != "none" else None
 

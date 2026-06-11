@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 _CST = timezone(timedelta(hours=8))
 
 INTENT_LABELS: dict[str, str] = {
-    "chat": "聊天", "report": "报表", "travel": "旅游", "code": "代码",
+    "chat": "聊天", "report": "报表", "travel": "旅游",
 }
 
 NODE_LABELS: dict[str, str] = {
@@ -16,7 +16,6 @@ NODE_LABELS: dict[str, str] = {
     "dispatcher":         "意图识别",
     "report":             "报表生成",
     "travel":             "旅游规划",
-    "code":               "代码生成",
     "memory_extraction":  "记忆提取",
     "document_agent":     "文档生成",
     "chat_agent":         "对话聊天",
