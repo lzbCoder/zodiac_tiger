@@ -178,10 +178,10 @@ async def answer_generator_node(state: AssistantState, config: RunnableConfig) -
 
 def route_after_planner(state: AssistantState) -> str:
     if state.get("is_finish", False):
-        return "answer_generator"
+        return "assistant_answer_generator"
     if state.get("react_loop_count", 0) >= _MAX_LOOPS:
-        return "answer_generator"
-    return "tool_executor"
+        return "assistant_answer_generator"
+    return "assistant_tool_executor"
 
 
 # ---- 构建子图 ----
@@ -189,22 +189,22 @@ def route_after_planner(state: AssistantState) -> str:
 def add_assistant_agent() -> StateGraph:
     sub = StateGraph(AssistantState)
 
-    sub.add_node("collect_task", collect_task_node)
-    sub.add_node("planner", planner_node)
-    sub.add_node("tool_executor", tool_executor_node)
-    sub.add_node("observation", observation_node)
-    sub.add_node("answer_generator", answer_generator_node)
+    sub.add_node("assistant_collect_task",     collect_task_node)
+    sub.add_node("assistant_planner",          planner_node)
+    sub.add_node("assistant_tool_executor",    tool_executor_node)
+    sub.add_node("assistant_observation",      observation_node)
+    sub.add_node("assistant_answer_generator", answer_generator_node)
 
-    sub.set_entry_point("collect_task")
-    sub.add_edge("collect_task", "planner")
+    sub.set_entry_point("assistant_collect_task")
+    sub.add_edge("assistant_collect_task", "assistant_planner")
 
-    sub.add_conditional_edges("planner", route_after_planner, {
-        "tool_executor": "tool_executor",
-        "answer_generator": "answer_generator",
+    sub.add_conditional_edges("assistant_planner", route_after_planner, {
+        "assistant_tool_executor":    "assistant_tool_executor",
+        "assistant_answer_generator": "assistant_answer_generator",
     })
 
-    sub.add_edge("tool_executor", "observation")
-    sub.add_edge("observation", "planner")
-    sub.add_edge("answer_generator", END)
+    sub.add_edge("assistant_tool_executor", "assistant_observation")
+    sub.add_edge("assistant_observation",   "assistant_planner")
+    sub.add_edge("assistant_answer_generator", END)
 
     return sub.compile()

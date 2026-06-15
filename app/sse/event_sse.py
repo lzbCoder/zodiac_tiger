@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 _CST = timezone(timedelta(hours=8))
 
 INTENT_LABELS: dict[str, str] = {
-    "chat": "聊天", "report": "报表", "travel": "旅游",
+    "chat": "聊天", "report": "报表", "travel": "旅游", "assistant": "助手",
 }
 
 NODE_LABELS: dict[str, str] = {
@@ -32,6 +32,13 @@ NODE_LABELS: dict[str, str] = {
     "tool_executor":      "工具执行",
     "observation":        "数据观察",
     "report_generator":   "报告生成",
+    # 综合助手子图
+    "assistant_agent":            "智能助手",
+    "assistant_collect_task":     "任务收集",
+    "assistant_planner":          "分析思考",
+    "assistant_tool_executor":    "工具执行",
+    "assistant_observation":      "数据观察",
+    "assistant_answer_generator": "回答生成",
 }
 
 # 子图节点 → 父节点映射（用于 tool/children 归属）
@@ -47,9 +54,15 @@ SUB_NODE_PARENT: dict[str, str] = {
     "tool_executor": "报表生成",
     "observation": "报表生成",
     "report_generator": "报表生成",
+    # 综合助手子图
+    "assistant_collect_task":     "智能助手",
+    "assistant_planner":          "智能助手",
+    "assistant_tool_executor":    "智能助手",
+    "assistant_observation":      "智能助手",
+    "assistant_answer_generator": "智能助手",
 }
 
-STREAM_NODES = {"chat_agent", "document_agent", "generate_plan", "report_generator"}
+STREAM_NODES = {"chat_agent", "document_agent", "generate_plan", "report_generator", "assistant_answer_generator"}
 
 
 def _now_ts() -> int:
@@ -88,7 +101,10 @@ _cycle_counts: dict[str, int] = {}  # ReAct 节点出现次数
 _react_rounds: dict[str, int] = {}  # ReAct 节点当前轮次（start 时写入，end 时读取）
 
 # ReAct 循环节点（每轮独立命名，不合并）
-_REACT_NODES = {"planner", "tool_executor", "observation"}
+_REACT_NODES = {
+    "planner", "tool_executor", "observation",
+    "assistant_planner", "assistant_tool_executor", "assistant_observation",
+}
 
 
 async def parse_events(stream):
@@ -157,19 +173,23 @@ async def parse_events(stream):
             elif name in _REACT_NODES:
                 rnd = _react_rounds.pop(name, 0) or output.get("react_loop_count", 0) or _cycle_counts.get(name, 0)
                 meta_dict["react_round"] = rnd
-                if name == "planner":
+                if name in ("planner", "assistant_planner"):
                     thought = output.get("current_thought", "")
                     if thought:
                         meta_dict["detail"] = f"🧠 思考：{thought[:300]}"
-                elif name == "tool_executor":
+                elif name in ("tool_executor", "assistant_tool_executor"):
                     tcs = output.get("tool_calls", [])
                     if tcs:
                         args_str = json.dumps(tcs[-1].get("args", {}), ensure_ascii=False)[:200]
                         meta_dict["detail"] = f"🔧 {tcs[-1].get('name','')} 入参: {args_str}"
-                elif name == "observation":
+                elif name in ("observation", "assistant_observation"):
                     obs = output.get("observations", [])
                     if obs:
                         meta_dict["detail"] = f"📊 {obs[-1].get('result','')[:300]}"
+            elif name == "assistant_answer_generator":
+                answer = output.get("final_answer", "")
+                if answer:
+                    meta_dict["detail"] = answer[:300]
 
             yield AgentEvent(
                 event_type="progress", name=display_name,
