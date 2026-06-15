@@ -39,9 +39,18 @@ async def collect_task_node(state: AssistantState, config: RunnableConfig) -> di
 async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
     from app.factory.llm_factory import create_llm
     from app.config import settings
+    from app.mcp.manager import GlobalMcpManager
 
     enable_search = config["configurable"].get("enable_search", False)
     loop = state.get("react_loop_count", 0)
+
+    # 静态工具 + MCP 动态工具合并
+    static_tools = _build_tool_map(enable_search)
+    try:
+        mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("assistant_agent")}
+    except Exception:
+        mcp_tools = {}
+    all_tools: dict = {**static_tools, **mcp_tools}
 
     brief_obs = [
         {"tool": o.get("tool", "unknown"), "summary": str(o.get("result", ""))[:300]}
@@ -49,11 +58,16 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
     ]
     obs_text = json.dumps(brief_obs, ensure_ascii=False)
 
-    search_tool_desc = (
-        "\n- web_search：联网搜索最新信息，参数 {\"query\": \"搜索词\"}"
-        if enable_search else ""
-    )
-    no_tool_note = "" if enable_search else "\n注意：当前无可用工具，请直接基于知识回答，将 finish 设为 true。"
+    if all_tools:
+        tool_desc_lines = "\n".join(
+            f"- {name}：{t.description}，参数格式见工具定义"
+            for name, t in all_tools.items()
+        )
+        tool_section = f"\n可用工具：\n{tool_desc_lines}"
+        no_tool_note = ""
+    else:
+        tool_section = "\n可用工具：（无）"
+        no_tool_note = "\n注意：当前无可用工具，请直接基于知识回答，将 finish 设为 true。"
 
     prompt = f"""你是越群山综合智能助手，负责处理报表、旅游之外的各类任务。当前任务：{state.get('task', '')}
 
@@ -63,11 +77,10 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
 请分析并决定下一步行动。返回纯 JSON：
 
 {{"thought": "你的分析思考", "action": "工具名或null", "action_input": {{}}, "finish": true/false}}
-
-可用工具：{search_tool_desc if enable_search else '（无）'}{search_tool_desc}{no_tool_note}
+{tool_section}{no_tool_note}
 
 规则：
-1. 需要实时信息、最新数据 → 调用 web_search
+1. 需要实时信息、最新数据 → 调用对应工具
 2. 信息足够或无工具可用 → finish=true, action=null
 3. 超过 {_MAX_LOOPS} 轮强制结束
 4. 只返回 JSON，不要其他内容"""
@@ -95,8 +108,15 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
 # ---- 节点 3：工具执行 ----
 
 async def tool_executor_node(state: AssistantState, config: RunnableConfig) -> dict:
+    from app.mcp.manager import GlobalMcpManager
+
     enable_search = config["configurable"].get("enable_search", False)
-    tool_map = _build_tool_map(enable_search)
+    static_tools = _build_tool_map(enable_search)
+    try:
+        mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("assistant_agent")}
+    except Exception:
+        mcp_tools = {}
+    tool_map = {**static_tools, **mcp_tools}
 
     tool_name = state.get("current_action", "") or ""
     tool_args = state.get("current_action_input", {}) or {}
@@ -111,7 +131,11 @@ async def tool_executor_node(state: AssistantState, config: RunnableConfig) -> d
         }
 
     try:
-        result = str(tool.invoke(tool_args))
+        # MCP 工具为 async，优先使用 ainvoke；本地工具兼容 invoke
+        if hasattr(tool, "ainvoke"):
+            result = str(await tool.ainvoke(tool_args))
+        else:
+            result = str(tool.invoke(tool_args))
     except Exception as e:
         result = f"工具执行失败: {e}"
 

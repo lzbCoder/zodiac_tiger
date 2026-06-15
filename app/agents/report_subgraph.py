@@ -34,6 +34,7 @@ async def collect_task_node(state: ReportState, config: RunnableConfig) -> dict:
 async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
     from app.factory.llm_factory import create_llm
     from app.config import settings
+    from app.mcp.manager import GlobalMcpManager
 
     brief_obs = [
         {"tool": o.get("tool", "unknown"), "summary": str(o.get("result", ""))[:300]}
@@ -44,6 +45,16 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
     enable_search = config["configurable"].get("enable_search", False)
 
     search_tool_desc = "\n- tavily_search_report：联网搜索，参数 {\"query\": \"搜索词\"}" if enable_search else ""
+
+    # 加载绑定的 MCP 动态工具
+    try:
+        mcp_tool_list = await GlobalMcpManager.build_tools_for_agent("report_agent")
+    except Exception:
+        mcp_tool_list = []
+    mcp_tool_desc = "".join(
+        f"\n- {t.name}：{t.description}"
+        for t in mcp_tool_list
+    )
 
     prompt = f"""你是资深数据分析师。当前任务：{state.get('task', '')}
 
@@ -56,7 +67,7 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
 
 可用工具：
 - query_sql：执行SQL查询，参数 {{"sql": "SELECT..."}}
-- read_excel：读取Excel文件，参数 {{"file_path": "路径"}}{search_tool_desc}
+- read_excel：读取Excel文件，参数 {{"file_path": "路径"}}{search_tool_desc}{mcp_tool_desc}
 
 规则：
 1. 信息不足 → 调用工具查询
@@ -89,10 +100,20 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
 # ---- 节点 3：工具执行 ----
 
 async def tool_executor_node(state: ReportState, config: RunnableConfig) -> dict:
+    from app.mcp.manager import GlobalMcpManager
+
     # 直接读取 planner 保存的工具调用信息，无需再次调用 LLM 提取
     tool_name = state.get("current_action", "") or ""
     tool_args = state.get("current_action_input", {}) or {}
+
+    # 静态工具优先，然后回退到 MCP 动态工具
     tool = _TOOL_MAP.get(tool_name)
+    if not tool:
+        try:
+            mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("report_agent")}
+            tool = mcp_tools.get(tool_name)
+        except Exception:
+            tool = None
 
     if not tool:
         logger.warning(f"[tool_executor] 无效工具: {tool_name}")
@@ -103,7 +124,10 @@ async def tool_executor_node(state: ReportState, config: RunnableConfig) -> dict
         }
 
     try:
-        result = str(tool.invoke(tool_args))
+        if hasattr(tool, "ainvoke"):
+            result = str(await tool.ainvoke(tool_args))
+        else:
+            result = str(tool.invoke(tool_args))
     except Exception as e:
         result = f"工具执行失败: {e}"
 

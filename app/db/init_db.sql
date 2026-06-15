@@ -34,29 +34,7 @@ CREATE TABLE IF NOT EXISTS root.skills (
     create_time TIMESTAMP    NOT NULL DEFAULT NOW()
 );
 
--- 4. MCP 服务配置表
-CREATE TABLE IF NOT EXISTS root.mcp_config (
-    id          BIGSERIAL PRIMARY KEY,
-    name        VARCHAR(100) NOT NULL,
-    url         VARCHAR(255) NOT NULL,
-    auth_type   VARCHAR(30)  NOT NULL,          -- none / api_key / token
-    api_key     VARCHAR(255),
-    timeout     INT          NOT NULL DEFAULT 20, -- 请求超时时间(秒)
-    status      SMALLINT     NOT NULL DEFAULT 1, -- 0禁用 1启用
-    create_time TIMESTAMP    NOT NULL DEFAULT NOW()
-);
-
--- 5. MCP 调用日志表
-CREATE TABLE IF NOT EXISTS root.mcp_call_log (
-    id           BIGSERIAL PRIMARY KEY,
-    mcp_id       BIGINT,
-    service_name VARCHAR(100),
-    status       VARCHAR(30),
-    result       TEXT,
-    create_time  TIMESTAMP DEFAULT NOW()
-);
-
--- 6. 用户画像表
+-- 4. 用户画像表
 CREATE TABLE IF NOT EXISTS root.user_profile (
     id          BIGSERIAL PRIMARY KEY,
     user_id     VARCHAR(64) NOT NULL,
@@ -130,3 +108,41 @@ CREATE TABLE IF NOT EXISTS root.file_info (
     created_at      TIMESTAMP DEFAULT NOW(),
     updated_at      TIMESTAMP DEFAULT NOW()
 );
+
+-- ==================== MCP 服务管理（新增 3 张表）====================
+
+-- 远程 MCP 服务主配置表
+CREATE TABLE IF NOT EXISTS root.mcp_server_config (
+    id              BIGSERIAL PRIMARY KEY,
+    mcp_key         VARCHAR(128) NOT NULL UNIQUE,
+    display_name    VARCHAR(256) NOT NULL,
+    endpoint_url    VARCHAR(512) NOT NULL,
+    auth_headers    JSONB        NOT NULL DEFAULT '{}',
+    enable_status   SMALLINT     NOT NULL DEFAULT 1,
+    connect_status  SMALLINT     NOT NULL DEFAULT 0,
+    last_check_time TIMESTAMP    NULL,
+    remark          VARCHAR(512) NULL,
+    create_time     TIMESTAMP    NOT NULL DEFAULT NOW(),
+    update_time     TIMESTAMP    NULL
+);
+
+-- MCP 工具清单 & 白名单表
+CREATE TABLE IF NOT EXISTS root.mcp_tool_info (
+    id           BIGSERIAL PRIMARY KEY,
+    mcp_key      VARCHAR(128) NOT NULL,
+    tool_name    VARCHAR(128) NOT NULL,
+    tool_desc    TEXT         NULL,
+    input_schema TEXT         NULL,
+    is_allow     SMALLINT     NOT NULL DEFAULT 1,
+    UNIQUE (mcp_key, tool_name)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_tool_mcp_key ON root.mcp_tool_info(mcp_key);
+
+-- Agent-MCP 绑定关系表
+CREATE TABLE IF NOT EXISTS root.agent_mcp_rel (
+    id         BIGSERIAL PRIMARY KEY,
+    agent_code VARCHAR(64)  NOT NULL,
+    mcp_key    VARCHAR(128) NOT NULL,
+    UNIQUE (agent_code, mcp_key)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_mcp_agent ON root.agent_mcp_rel(agent_code);

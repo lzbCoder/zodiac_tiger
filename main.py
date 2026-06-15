@@ -79,6 +79,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"技能缓存刷新失败: {e}")
 
+    try:
+        from app.mcp.manager import GlobalMcpManager
+        await GlobalMcpManager.init()
+    except Exception as e:
+        logger.error(f"MCP Manager 初始化失败: {e}")
+
     # 启动定时清理任务
     start_cleanup_task()
 
