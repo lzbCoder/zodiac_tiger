@@ -22,18 +22,6 @@ CREATE TABLE IF NOT EXISTS root.prompt_templates (
     create_time TIMESTAMP    NOT NULL DEFAULT NOW()
 );
 
--- 3. 技能配置表
-CREATE TABLE IF NOT EXISTS root.skills (
-    id          BIGSERIAL PRIMARY KEY,
-    name        VARCHAR(100) NOT NULL,
-    "desc"      TEXT,                           -- 技能功能描述
-    skill_type  VARCHAR(30)  NOT NULL,          -- builtin / custom / mcp
-    mcp_id      BIGINT,                         -- 绑定 MCP 服务 ID
-    timeout     INT          NOT NULL DEFAULT 30, -- 调用超时时间(秒)
-    status      SMALLINT     NOT NULL DEFAULT 1, -- 0禁用 1启用
-    create_time TIMESTAMP    NOT NULL DEFAULT NOW()
-);
-
 -- 4. 用户画像表
 CREATE TABLE IF NOT EXISTS root.user_profile (
     id          BIGSERIAL PRIMARY KEY,
@@ -146,3 +134,42 @@ CREATE TABLE IF NOT EXISTS root.agent_mcp_rel (
     UNIQUE (agent_code, mcp_key)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_mcp_agent ON root.agent_mcp_rel(agent_code);
+
+-- ==================== 技能管理（3 张表）====================
+
+-- 技能主表（发现阶段仅读此表，零磁盘 IO）
+CREATE TABLE IF NOT EXISTS root.skill_info (
+    id               BIGSERIAL PRIMARY KEY,
+    skill_key        VARCHAR(128) NOT NULL UNIQUE,
+    origin_name      VARCHAR(256) NOT NULL,
+    skill_name       VARCHAR(256) NOT NULL,
+    origin_desc      TEXT         NOT NULL,
+    skill_desc       TEXT         NULL,
+    folder_abs_path  VARCHAR(512) NOT NULL,
+    enable_status    SMALLINT     NOT NULL DEFAULT 1,
+    sort             INT          NOT NULL DEFAULT 0,
+    create_time      TIMESTAMP    NOT NULL DEFAULT NOW(),
+    update_time      TIMESTAMP    NULL
+);
+CREATE INDEX IF NOT EXISTS idx_skill_info_enable ON root.skill_info(enable_status);
+
+-- SKILL.md 结构化缓存表（激活阶段懒加载写入）
+CREATE TABLE IF NOT EXISTS root.skill_md_meta (
+    id               BIGSERIAL PRIMARY KEY,
+    skill_key        VARCHAR(128) NOT NULL UNIQUE,
+    full_md_content  TEXT         NULL,
+    system_prompt    TEXT         NULL,
+    bind_tools       TEXT         NULL,
+    input_schema     TEXT         NULL,
+    output_rule      TEXT         NULL,
+    update_time      TIMESTAMP    NULL
+);
+
+-- Agent-技能多对多绑定
+CREATE TABLE IF NOT EXISTS root.agent_skill_rel (
+    id               BIGSERIAL PRIMARY KEY,
+    agent_code       VARCHAR(64)  NOT NULL,
+    skill_key        VARCHAR(128) NOT NULL,
+    UNIQUE (agent_code, skill_key)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_skill_agent ON root.agent_skill_rel(agent_code);

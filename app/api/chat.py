@@ -13,7 +13,6 @@ from app.agents.graph import get_agent_graph
 from app.state.agent_state import AgentState
 from app.sse.event_sse import parse_events, AgentEvent
 from app.config import settings
-from app.skills.registry import SkillRegistry
 from app.db.redis import get_redis
 from app.db.checkpoint import delete_checkpoint_thread
 from app.utils.response import success, fail
@@ -128,7 +127,6 @@ async def chat_stream(req: ChatRequest):
                     "user_id": user_id,
                     "chat_id": chat_id,
                     "session_id": session_id,
-                    "matched_skills": await SkillRegistry.get_available(),
                     "thread_id": f"admin:{session_id}",
                     "enable_search": req.enable_search,
                 }
@@ -209,7 +207,7 @@ async def chat_resume(req: ResumeRequest):
             full_config = {
                 "configurable": {
                     **req.config.get("configurable", {}),
-                    "session_id": sid, "chat_id": cid, "user_id": "admin", "matched_skills": [],
+                    "session_id": sid, "chat_id": cid, "user_id": "admin",
                 }
             }
 

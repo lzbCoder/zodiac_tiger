@@ -22,10 +22,7 @@ async def dispatcher_node(state: AgentState, config: RunnableConfig) -> dict:
                       "有什么能力", "介绍一下", "你能干嘛", "试试", "test"]
     is_fuzzy = any(kw in user_message for kw in fuzzy_keywords)
 
-    # 从 config 读取运行时上下文
     chat_id = config["configurable"]["chat_id"]
-    skills = config["configurable"]["matched_skills"]
-
     logger.info(f"[调度] intent={intent}, chat_id={chat_id}")
 
     result: dict = {"intent": intent}

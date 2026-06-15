@@ -52,6 +52,19 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
         mcp_tools = {}
     all_tools: dict = {**static_tools, **mcp_tools}
 
+    # 技能系统提示词注入
+    from app.skills.manager import GlobalSkillManager
+    try:
+        skill_list = await GlobalSkillManager.get_skills_for_agent("assistant_agent")
+    except Exception:
+        skill_list = []
+    skill_context = ""
+    if skill_list:
+        parts = [f"【{s['skill_name']}】\n{s['system_prompt']}"
+                 for s in skill_list if s.get("system_prompt")]
+        if parts:
+            skill_context = "\n\n已加载本地技能（请参考其指令执行）：\n" + "\n\n".join(parts)
+
     brief_obs = [
         {"tool": o.get("tool", "unknown"), "summary": str(o.get("result", ""))[:300]}
         for o in state.get("observations", [])
@@ -69,7 +82,7 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
         tool_section = "\n可用工具：（无）"
         no_tool_note = "\n注意：当前无可用工具，请直接基于知识回答，将 finish 设为 true。"
 
-    prompt = f"""你是越群山综合智能助手，负责处理报表、旅游之外的各类任务。当前任务：{state.get('task', '')}
+    prompt = f"""你是越群山综合智能助手，负责处理报表、旅游之外的各类任务。当前任务：{state.get('task', '')}{skill_context}
 
 历史观察结果：{obs_text if obs_text != '[]' else '无'}
 已执行循环次数：{loop} / {_MAX_LOOPS}

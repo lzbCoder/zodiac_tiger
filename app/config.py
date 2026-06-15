@@ -1,8 +1,11 @@
 import os
 import urllib.parse
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_tiger_root = Path(__file__).parent.parent
 
 
 class Settings:
@@ -59,6 +62,9 @@ class Settings:
     APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
     APP_PORT: int = int(os.getenv("APP_PORT", "8000"))
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+    # Skills
+    SKILLS_ROOT: str = os.getenv("SKILLS_ROOT", str(_tiger_root / "skills"))
 
     # LangSmith
     LANGCHAIN_TRACING_V2: str = os.getenv("LANGCHAIN_TRACING_V2", "false")

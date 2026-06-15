@@ -4,7 +4,7 @@ from loguru import logger
 
 from app.db.redis import get_redis
 from app.db.session import get_db_session
-from app.models.skill import Skill
+from app.models.skill_info import SkillInfo
 
 SKILL_CACHE_KEY = "skill:all"
 
@@ -14,31 +14,24 @@ class SkillRegistry:
 
     @staticmethod
     async def refresh() -> None:
-        """重新加载所有启用技能到 Redis 缓存。"""
         async with get_db_session() as session:
-            stmt = (
+            rows = (await session.execute(
                 select(
-                    Skill.id,
-                    Skill.name,
-                    Skill.desc,
-                    Skill.skill_type,
-                    Skill.mcp_id,
-                    Skill.timeout,
+                    SkillInfo.skill_key,
+                    SkillInfo.skill_name,
+                    SkillInfo.skill_desc,
+                    SkillInfo.enable_status,
                 )
-                .where(Skill.status == 1)
-                .order_by(Skill.id)
-            )
-            result = await session.execute(stmt)
-            rows = result.all()
+                .where(SkillInfo.enable_status == 1)
+                .order_by(SkillInfo.sort, SkillInfo.id)
+            )).all()
 
         skills = [
             {
-                "id": r.id,
-                "name": r.name,
-                "desc": r.desc,
-                "skill_type": r.skill_type,
-                "mcp_id": r.mcp_id,
-                "timeout": r.timeout,
+                "skill_key": r.skill_key,
+                "skill_name": r.skill_name,
+                "skill_desc": r.skill_desc,
+                "enable_status": r.enable_status,
             }
             for r in rows
         ]
@@ -48,7 +41,6 @@ class SkillRegistry:
 
     @staticmethod
     async def get_available() -> list[dict]:
-        """获取当前所有可用技能（从 Redis 读取）。Redis 不可用时降级返回空列表。"""
         try:
             r = await get_redis()
             data = await r.get(SKILL_CACHE_KEY)

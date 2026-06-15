@@ -56,7 +56,20 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
         for t in mcp_tool_list
     )
 
-    prompt = f"""你是资深数据分析师。当前任务：{state.get('task', '')}
+    # 技能系统提示词注入
+    from app.skills.manager import GlobalSkillManager
+    try:
+        skill_list = await GlobalSkillManager.get_skills_for_agent("report_agent")
+    except Exception:
+        skill_list = []
+    skill_context = ""
+    if skill_list:
+        parts = [f"【{s['skill_name']}】\n{s['system_prompt']}"
+                 for s in skill_list if s.get("system_prompt")]
+        if parts:
+            skill_context = "\n\n已加载本地技能（请参考其指令执行）：\n" + "\n\n".join(parts)
+
+    prompt = f"""你是资深数据分析师。当前任务：{state.get('task', '')}{skill_context}
 
 历史观察结果：{obs_text if obs_text != '[]' else '无'}
 已执行循环次数：{loop} / {_MAX_LOOPS}

@@ -26,6 +26,8 @@ dependencies = [
     "langchain-tavily>=0.2.18",
     "langchain-openai>=1.2.2",
     "mcp>=1.27.2",
+    "agentskills-core>=0.2.3",
+    "rarfile>=4.2",
 ]
 
 [tool.hatch.build.targets.wheel]
