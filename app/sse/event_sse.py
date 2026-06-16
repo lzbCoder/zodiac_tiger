@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 
+
 _CST = timezone(timedelta(hours=8))
 
 INTENT_LABELS: dict[str, str] = {
@@ -35,6 +36,7 @@ NODE_LABELS: dict[str, str] = {
     # 综合助手子图
     "assistant_agent":            "智能助手",
     "assistant_collect_task":     "任务收集",
+    "assistant_triage":           "任务分析",
     "assistant_planner":          "分析思考",
     "assistant_tool_executor":    "工具执行",
     "assistant_observation":      "数据观察",
@@ -56,6 +58,7 @@ SUB_NODE_PARENT: dict[str, str] = {
     "report_generator": "报表生成",
     # 综合助手子图
     "assistant_collect_task":     "智能助手",
+    "assistant_triage":           "智能助手",
     "assistant_planner":          "智能助手",
     "assistant_tool_executor":    "智能助手",
     "assistant_observation":      "智能助手",
@@ -196,6 +199,16 @@ async def parse_events(stream):
                 status="completed", cost_ms=cost,
                 metadata=meta_dict,
             )
+
+            # --- plan: 复杂任务步骤计划（triage 生成 / planner 每轮更新） ---
+            plan_steps = output.get("plan_steps")
+            if plan_steps:
+                all_done = all(s.get("status") == "done" for s in plan_steps)
+                yield AgentEvent(
+                    event_type="plan", name="执行计划",
+                    status="completed" if all_done else "running",
+                    metadata={"steps": plan_steps, "parent_node": "智能助手"},
+                )
 
         # --- thought: 聊天模型 开始 ---
         elif ev == "on_chat_model_start":

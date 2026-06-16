@@ -11,6 +11,12 @@ class AssistantState(AgentState):
     task: NotRequired[str]
     """当前需要处理的用户任务描述。"""
 
+    complexity: NotRequired[str]
+    """任务复杂度判定：simple（直接执行）| complex（先规划再分步执行）。"""
+
+    plan_steps: NotRequired[list[dict]]
+    """复杂任务的显式步骤计划，元素形如 {index, description, status}，status ∈ {pending, in_progress, done}。"""
+
     current_thought: NotRequired[str]
     """ReAct 循环中当前的思考内容。"""
 

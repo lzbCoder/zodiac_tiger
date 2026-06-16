@@ -13,6 +13,10 @@ class ResumeRequest(BaseModel):
     chat_id: str | None = None
 
 
+class AbortRequest(BaseModel):
+    session_id: str
+
+
 class ChatHistoryItem(BaseModel):
     id: int
     session_id: str

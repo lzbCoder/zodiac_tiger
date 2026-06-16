@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
-from app.schemas.chat import ChatRequest, ResumeRequest
+from app.schemas.chat import ChatRequest, ResumeRequest, AbortRequest
 from app.services import chat_service
 from app.services.summary_service import summarize_and_prune, get_latest_summary
 from app.services import execution_log_service
@@ -71,26 +71,52 @@ def _yield_progress(name: str, buf: list):
         yield ev.to_sse()
 
 
-async def _stream_graph(graph, input_data, config, events_buf):
+async def _stream_graph(graph, input_data, config, events_buf, session_id: str = ""):
     """
     执行 LangGraph astream_events 并逐事件 yield SSE。
     流式 token 自动累积，结束后以 "_content" 事件存入 events_buf。
+    每 10 个事件检查一次 Redis abort 信号，收到则提前终止。
+    在任何退出路径上（包括 GeneratorExit）都会关闭 LangGraph 流以释放 checkpoint 连接。
     """
     full = ""
+    r = None
+    if session_id:
+        try:
+            r = await get_redis()
+        except Exception:
+            pass
     stream = graph.astream_events(input_data, config, version="v2")
-    async for ev in parse_events(stream):
-        events_buf.append(ev)
-        yield ev.to_sse()
-        if ev.event_type == "token":
-            full += ev.content
-    # 哨兵事件：携带累积的全文
-    events_buf.append(AgentEvent(event_type="_content", name="", status="completed", content=full))
+    _check = 0
+    try:
+        async for ev in parse_events(stream):
+            _check += 1
+            if r and _check % 10 == 0:
+                try:
+                    if await r.get(f"abort:{session_id}"):
+                        await r.delete(f"abort:{session_id}")
+                        break
+                except Exception:
+                    pass
+            events_buf.append(ev)
+            yield ev.to_sse()
+            if ev.event_type == "token":
+                full += ev.content
+    except GeneratorExit:
+        # 捕获 GeneratorExit，显式关闭 LangGraph 流以释放 checkpoint 连接池
+        await asyncio.shield(stream.aclose())
+        raise
+    finally:
+        events_buf.append(AgentEvent(event_type="_content", name="", status="completed", content=full))
 
 
 async def _finalize(snap, full_content, session_id, user_id, config, events_buf):
     """对话收尾：保存 AI 消息 + 触发摘要 + 异步写入执行日志。"""
+    logger.info(f"[_finalize] session={session_id} full_content_len={len(full_content)} events_cnt={len(events_buf)} snap_is_none={snap is None}")
     if full_content:
         await chat_service.save_message(session_id, "ai", full_content, config["configurable"]["chat_id"])
+    elif events_buf:
+        # 流被中断（手动终止等）时仍保存 AI 消息骨架，使 execution_events 能被正确回显
+        await chat_service.save_message(session_id, "ai", "（任务已被手动终止）", config["configurable"]["chat_id"])
     await summarize_and_prune(
         snap.values if snap else {}, user_id, session_id, config)
     await execution_log_service.batch_save_events(
@@ -115,13 +141,18 @@ async def chat_stream(req: ChatRequest):
         chat_id = uuid.uuid4().hex                    # 本轮对话唯一 ID
         session_id = req.session_id
         events_buf: list[AgentEvent] = []              # 累积所有事件，用于入 execution_log
+        full_content = ""
+        snap = None
+        config = None
+        graph = None
+        user_id = "admin"
+        stream_gen = None                              # 指向 _stream_graph 生成器，用于异常时关闭
 
         try:
             # 1. 保存用户消息到 chat_history
             await chat_service.save_message(session_id, "user", req.message, chat_id)
 
             # 2. 构建运行时 config（注入 thread_id、enable_search 等）
-            user_id = "admin"
             config = {
                 "configurable": {
                     "user_id": user_id,
@@ -146,8 +177,10 @@ async def chat_stream(req: ChatRequest):
                 yield ev
 
             # 5. 执行 Graph 事件流
-            async for _sse in _stream_graph(graph, initial_state, config, events_buf):
+            stream_gen = _stream_graph(graph, initial_state, config, events_buf, session_id)
+            async for _sse in stream_gen:
                 yield _sse
+            stream_gen = None
             full_content = next((e.content for e in reversed(events_buf) if e.event_type == "_content"), "")
 
             # 6. 检查中断（旅游子图缺参数等）
@@ -168,17 +201,42 @@ async def chat_stream(req: ChatRequest):
                 for ev in _yield_progress("处理完成", events_buf):
                     yield ev
 
-            # 10. 结果事件 + 流结束
+            # 9. 结果事件 + 流结束
             yield AgentEvent(event_type="result", name="chat", status="completed",
-                             content=full_content, metadata={"chat_id": chat_id}).to_sse()
+                             content=full_content, metadata={
+                                 "chat_id": chat_id,
+                                 "session_title": req.message[:30],
+                             }).to_sse()
             yield AgentEvent(event_type="done", name="stream", status="completed").to_sse()
 
-            # 11. 异步后处理：摘要 + 执行日志入库
-            await _finalize(snap, full_content, session_id, user_id, config, events_buf)
+        except GeneratorExit:
+            # 先关闭 LangGraph 流 → 释放 checkpoint 连接 → 再落盘执行记录
+            if stream_gen is not None:
+                await asyncio.shield(stream_gen.aclose())
+                stream_gen = None
+            raise
 
         except Exception as e:
             logger.opt(exception=True).error(f"聊天处理异常: {e}")
-            yield AgentEvent(event_type="error", name="exception", status="error", content=str(e)).to_sse()
+            try:
+                yield AgentEvent(event_type="error", name="exception", status="error", content=str(e)).to_sse()
+            except GeneratorExit:
+                raise
+
+        finally:
+            # 确保执行记录入库（即使客户端提前断开连接）
+            # 注意：此处不再调用 graph.aget_state() —— 避免在 GeneratorExit 清理路径上
+            # 复用 checkpointer 连接池中仍有 pending 查询的连接。
+            # snap 保持 None 时 summarize_and_prune 自动跳过，不影响执行记录落盘。
+            if config is not None:
+                # 先标记所有仍为 running 的事件为 terminated，防止前端一直转圈
+                for ev in events_buf:
+                    if ev.status == 'running':
+                        ev.status = 'terminated'
+                try:
+                    await asyncio.shield(_finalize(snap, full_content, session_id, user_id, config, events_buf))
+                except BaseException as e:
+                    logger.error(f"保存执行记录失败: {e}")
 
     return _build_stream_response(event_generator)
 
@@ -192,6 +250,12 @@ async def chat_resume(req: ResumeRequest):
 
     async def resume_generator():
         events_buf: list[AgentEvent] = []
+        full_content = ""
+        snap = None
+        graph = None
+        full_config = None
+        sid = ""
+        stream_gen = None
 
         try:
             # 1. 从前端传的 thread_id 反推 session_id
@@ -212,8 +276,10 @@ async def chat_resume(req: ResumeRequest):
             }
 
             # 4. 以 Command(resume=params) 恢复 Graph 执行
-            async for _sse in _stream_graph(graph, Command(resume=req.params), full_config, events_buf):
+            stream_gen = _stream_graph(graph, Command(resume=req.params), full_config, events_buf, sid)
+            async for _sse in stream_gen:
                 yield _sse
+            stream_gen = None
             full_content = next((e.content for e in reversed(events_buf) if e.event_type == "_content"), "")
 
             # 5. 检查是否还有后续中断
@@ -234,19 +300,53 @@ async def chat_resume(req: ResumeRequest):
                 for ev in _yield_progress("处理完成", events_buf):
                     yield ev
 
-            # 9. 结果 + 结束
+            # 8. 结果 + 结束
             yield AgentEvent(event_type="result", name="resume", status="completed",
                              content=full_content).to_sse()
             yield AgentEvent(event_type="done", name="stream", status="completed").to_sse()
 
-            # 10. 异步收尾
-            await _finalize(snap, full_content, sid, "admin", full_config, events_buf)
+        except GeneratorExit:
+            if stream_gen is not None:
+                await asyncio.shield(stream_gen.aclose())
+                stream_gen = None
+            raise
 
         except Exception as e:
             logger.opt(exception=True).error(f"恢复执行失败: {e}")
-            yield AgentEvent(event_type="error", name="exception", status="error", content=str(e)).to_sse()
+            try:
+                yield AgentEvent(event_type="error", name="exception", status="error", content=str(e)).to_sse()
+            except GeneratorExit:
+                raise
+
+        finally:
+            # 确保执行记录入库（即使客户端提前断开连接）
+            # 注意：此处不再调用 graph.aget_state() —— 避免在 GeneratorExit 清理路径上
+            # 复用 checkpointer 连接池中仍有 pending 查询的连接。
+            if full_config is not None:
+                # 先标记所有仍为 running 的事件为 terminated，防止前端一直转圈
+                for ev in events_buf:
+                    if ev.status == 'running':
+                        ev.status = 'terminated'
+                try:
+                    await asyncio.shield(_finalize(snap, full_content, sid, "admin", full_config, events_buf))
+                except BaseException as e:
+                    logger.error(f"保存执行记录失败: {e}")
 
     return _build_stream_response(resume_generator)
+
+
+# ========== /chat/abort：终止执行流 ==========
+
+@router.post("/chat/abort")
+async def abort_chat(req: AbortRequest):
+    """向 Redis 写入终止信号，_stream_graph 轮询到后中断当前执行流。"""
+    try:
+        r = await get_redis()
+        await r.setex(f"abort:{req.session_id}", 30, "1")
+        return success(message="终止信号已发送")
+    except Exception as e:
+        logger.error(f"终止信号发送失败: {e}")
+        return fail(message=str(e))
 
 
 # ========== 其他路由 ==========

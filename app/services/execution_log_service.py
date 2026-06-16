@@ -51,6 +51,7 @@ async def get_events_by_chat(chat_id: str) -> list[dict]:
         react_round = None
         tool_args = ""
         cost_sec = None
+        steps = None
         try:
             if content.startswith("{"):
                 data = json.loads(content)
@@ -61,6 +62,7 @@ async def get_events_by_chat(chat_id: str) -> list[dict]:
                 react_round = data.get("react_round")
                 tool_args = data.get("tool_args", "")
                 cost_sec = data.get("cost_sec")
+                steps = data.get("steps")
         except (json.JSONDecodeError, TypeError):
             pass
         item = {
@@ -80,5 +82,7 @@ async def get_events_by_chat(chat_id: str) -> list[dict]:
             item["tool_args"] = tool_args
         if cost_sec is not None:
             item["cost_sec"] = cost_sec
+        if steps is not None:
+            item["steps"] = steps
         items.append(item)
     return items

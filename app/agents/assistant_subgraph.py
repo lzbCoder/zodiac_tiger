@@ -34,7 +34,58 @@ async def collect_task_node(state: AssistantState, config: RunnableConfig) -> di
     }
 
 
-# ---- 节点 2：Planner（思考决策） ----
+# ---- 节点 2：Triage（分流 + 规划） ----
+
+async def triage_node(state: AssistantState, config: RunnableConfig) -> dict:
+    """
+    单次 LLM 调用完成「复杂度判定 + 步骤规划」：
+    - 简单任务：complexity=simple，无计划，后续直接走 ReAct 循环。
+    - 复杂任务：complexity=complex，生成显式步骤清单（plan_steps），分步执行并可视化。
+    """
+    from app.factory.llm_factory import create_llm
+    from app.config import settings
+
+    task = state.get("task", "")
+    prompt = f"""你是任务分流助手。判断下面用户任务是「简单」还是「复杂」，并在复杂时拆解为有序步骤。
+
+用户任务：{task}
+
+判定标准：
+- simple：单一、直接的请求（问答、闲聊、简短文案、单步操作），无需多步骤即可完成。
+- complex：需要多步骤协作的请求（如先调研再对比再总结、多来源汇总、含先后依赖的任务）。
+
+返回纯 JSON：
+{{"complexity": "simple"或"complex", "plan": ["步骤1", "步骤2", ...]}}
+
+规则：
+1. simple 时 plan 返回空数组 []。
+2. complex 时 plan 给出 2~6 个简洁、可执行的步骤描述（每条不超过 30 字）。
+3. 只返回 JSON，不要其他内容。"""
+
+    llm = create_llm(settings.INTENT_MODEL, streaming=False, tags=["skip_stream"])
+    resp = await llm.ainvoke(prompt)
+    try:
+        text = resp.content.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        data = json.loads(text)
+        complexity = data.get("complexity", "simple")
+        plan = data.get("plan", []) or []
+    except (json.JSONDecodeError, IndexError):
+        logger.warning(f"[assistant] Triage JSON 解析失败: {resp.content[:200]}")
+        complexity, plan = "simple", []
+
+    if complexity != "complex" or not plan:
+        return {"complexity": "simple", "plan_steps": []}
+
+    plan_steps = [
+        {"index": i, "description": str(desc), "status": "pending"}
+        for i, desc in enumerate(plan)
+    ]
+    return {"complexity": "complex", "plan_steps": plan_steps}
+
+
+# ---- 节点 3：Planner（思考决策） ----
 
 async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
     from app.factory.llm_factory import create_llm
@@ -71,6 +122,27 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
     ]
     obs_text = json.dumps(brief_obs, ensure_ascii=False)
 
+    # 计划感知：复杂任务注入步骤清单与当前进度（深拷贝，避免直接改写 state 内字典）
+    plan_steps = [dict(s) for s in (state.get("plan_steps") or [])]
+    is_complex = bool(plan_steps)
+    if is_complex:
+        steps_lines = "\n".join(
+            f"  {s['index']}. [{s['status']}] {s['description']}" for s in plan_steps
+        )
+        plan_section = (
+            f"\n\n执行计划（共 {len(plan_steps)} 步，按 index 顺序推进）：\n{steps_lines}\n"
+            "请聚焦当前待执行的步骤，完成后在 JSON 中标记。"
+        )
+        plan_json_fields = ', "current_step": 当前步骤index整数, "step_done": true/false'
+        plan_rules = (
+            "\n5. current_step 为你本轮正在处理的步骤 index（从 0 开始）"
+            "\n6. 该步骤已完成时 step_done=true；仅当所有步骤都完成后才 finish=true"
+        )
+    else:
+        plan_section = ""
+        plan_json_fields = ""
+        plan_rules = ""
+
     if all_tools:
         tool_desc_lines = "\n".join(
             f"- {name}：{t.description}，参数格式见工具定义"
@@ -82,21 +154,21 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
         tool_section = "\n可用工具：（无）"
         no_tool_note = "\n注意：当前无可用工具，请直接基于知识回答，将 finish 设为 true。"
 
-    prompt = f"""你是越群山综合智能助手，负责处理报表、旅游之外的各类任务。当前任务：{state.get('task', '')}{skill_context}
+    prompt = f"""你是越群山综合智能助手，负责处理报表、旅游之外的各类任务。当前任务：{state.get('task', '')}{skill_context}{plan_section}
 
 历史观察结果：{obs_text if obs_text != '[]' else '无'}
 已执行循环次数：{loop} / {_MAX_LOOPS}
 
 请分析并决定下一步行动。返回纯 JSON：
 
-{{"thought": "你的分析思考", "action": "工具名或null", "action_input": {{}}, "finish": true/false}}
+{{"thought": "你的分析思考", "action": "工具名或null", "action_input": {{}}, "finish": true/false{plan_json_fields}}}
 {tool_section}{no_tool_note}
 
 规则：
 1. 需要实时信息、最新数据 → 调用对应工具
 2. 信息足够或无工具可用 → finish=true, action=null
 3. 超过 {_MAX_LOOPS} 轮强制结束
-4. 只返回 JSON，不要其他内容"""
+4. 只返回 JSON，不要其他内容{plan_rules}"""
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
     resp = await llm.ainvoke(prompt)
@@ -104,21 +176,46 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
         text = resp.content.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        plan = json.loads(text)
+        decision = json.loads(text)
     except json.JSONDecodeError:
         logger.warning(f"[assistant] Planner JSON 解析失败: {resp.content[:200]}")
-        plan = {"thought": "无法解析思考结果，直接生成回答", "action": None, "action_input": {}, "finish": True}
+        decision = {"thought": "无法解析思考结果，直接生成回答", "action": None, "action_input": {}, "finish": True}
 
-    return {
-        "current_thought": plan.get("thought", ""),
-        "current_action": plan.get("action"),
-        "current_action_input": plan.get("action_input", {}),
-        "is_finish": plan.get("finish", False) or loop + 1 >= _MAX_LOOPS,
-        "react_loop_count": loop + 1,
+    new_loop = loop + 1
+    result: dict = {
+        "current_thought": decision.get("thought", ""),
+        "current_action": decision.get("action"),
+        "current_action_input": decision.get("action_input", {}),
+        "react_loop_count": new_loop,
     }
 
+    if is_complex:
+        cur = decision.get("current_step")
+        step_done = bool(decision.get("step_done", False))
+        for s in plan_steps:
+            if s["status"] == "done":
+                continue
+            if cur is not None and isinstance(cur, int):
+                if s["index"] < cur:
+                    s["status"] = "done"          # 已跳过的前置步骤视为完成
+                elif s["index"] == cur:
+                    s["status"] = "done" if step_done else "in_progress"
+        all_done = all(s["status"] == "done" for s in plan_steps)
+        # 没有进行中的步骤时，把第一个未完成步骤置为 in_progress
+        if not all_done and not any(s["status"] == "in_progress" for s in plan_steps):
+            for s in plan_steps:
+                if s["status"] != "done":
+                    s["status"] = "in_progress"
+                    break
+        result["plan_steps"] = plan_steps
+        result["is_finish"] = all_done or new_loop >= _MAX_LOOPS
+    else:
+        result["is_finish"] = decision.get("finish", False) or new_loop >= _MAX_LOOPS
 
-# ---- 节点 3：工具执行 ----
+    return result
+
+
+# ---- 节点 4：工具执行 ----
 
 async def tool_executor_node(state: AssistantState, config: RunnableConfig) -> dict:
     from app.mcp.mcp_manager import GlobalMcpManager
@@ -159,7 +256,7 @@ async def tool_executor_node(state: AssistantState, config: RunnableConfig) -> d
     }
 
 
-# ---- 节点 4：观察记录 ----
+# ---- 节点 5：观察记录 ----
 
 async def observation_node(state: AssistantState, config: RunnableConfig) -> dict:
     tcs = state.get("tool_calls", [])
@@ -179,7 +276,7 @@ async def observation_node(state: AssistantState, config: RunnableConfig) -> dic
     }
 
 
-# ---- 节点 5：回答生成 ----
+# ---- 节点 6：回答生成 ----
 
 async def answer_generator_node(state: AssistantState, config: RunnableConfig) -> dict:
     from app.factory.llm_factory import create_llm
@@ -227,13 +324,15 @@ def build_assistant_agent() -> StateGraph:
     sub = StateGraph(AssistantState)
 
     sub.add_node("assistant_collect_task",     collect_task_node)
+    sub.add_node("assistant_triage",           triage_node)
     sub.add_node("assistant_planner",          planner_node)
     sub.add_node("assistant_tool_executor",    tool_executor_node)
     sub.add_node("assistant_observation",      observation_node)
     sub.add_node("assistant_answer_generator", answer_generator_node)
 
     sub.set_entry_point("assistant_collect_task")
-    sub.add_edge("assistant_collect_task", "assistant_planner")
+    sub.add_edge("assistant_collect_task", "assistant_triage")
+    sub.add_edge("assistant_triage",       "assistant_planner")
 
     sub.add_conditional_edges("assistant_planner", route_after_planner, {
         "assistant_tool_executor":    "assistant_tool_executor",
