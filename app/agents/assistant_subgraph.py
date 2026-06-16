@@ -7,6 +7,7 @@ from loguru import logger
 
 from app.state.assistant_state import AssistantState
 from app.tools.web_search import web_search as web_search_tool
+from app.agents.agent_utils import tool_schema_text, build_tool_desc_section
 
 _MAX_LOOPS = 10
 
@@ -154,16 +155,8 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
         plan_json_fields = ""
         plan_rules = ""
 
-    if all_tools:
-        tool_desc_lines = "\n".join(
-            f"- {name}：{t.description}，参数格式见工具定义"
-            for name, t in all_tools.items()
-        )
-        tool_section = f"\n可用工具：\n{tool_desc_lines}"
-        no_tool_note = ""
-    else:
-        tool_section = "\n可用工具：（无）"
-        no_tool_note = "\n注意：当前无可用工具，请直接基于知识回答，将 finish 设为 true。"
+    tool_section = build_tool_desc_section(all_tools)
+    no_tool_note = "\n注意：当前无可用工具，请直接基于知识回答，将 finish 设为 true。" if not all_tools else ""
 
     prompt = f"""你是越群山综合智能助手，负责处理报表、旅游之外的各类任务。当前任务：{state.get('task', '')}{skill_context}{plan_section}
 

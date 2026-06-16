@@ -1,7 +1,11 @@
 """全局 MCP 管理器：配置缓存 + LangChain 工具转换"""
 
+import json
+from typing import Any, Optional, Type
+
 from loguru import logger
-from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field, create_model
+from langchain_core.tools import BaseTool, StructuredTool
 
 
 class GlobalMcpManager:
@@ -65,23 +69,71 @@ class GlobalMcpManager:
                 continue
             client = cls.get_client(mcp_key)
             for t in await get_allowed_tools(mcp_key):
-                tools.append(_make_lc_tool(client, t["tool_name"], t["tool_desc"] or ""))
+                tools.append(_make_lc_tool(
+                    client,
+                    t["tool_name"],
+                    t["tool_desc"] or "",
+                    t.get("input_schema") or "",
+                ))
         return tools
 
 
-def _make_lc_tool(client, tool_name: str, tool_desc: str) -> BaseTool:
-    """将远端 MCP 工具封装为 LangChain BaseTool（async）。"""
-    from langchain_core.tools import tool as lc_tool
+_JSON_TYPE_MAP: dict[str, type] = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
 
-    # 闭包捕获 client / tool_name，避免循环变量覆盖
+
+def _json_schema_to_pydantic(schema_str: str, model_name: str) -> Type[BaseModel] | None:
+    """
+    将 MCP inputSchema（JSON 字符串）转为 Pydantic BaseModel。
+    解析失败或 schema 无 properties 时返回 None，调用方降级到 **kwargs。
+    """
+    if not schema_str:
+        return None
+    try:
+        schema: dict = json.loads(schema_str) if isinstance(schema_str, str) else schema_str
+    except Exception:
+        return None
+
+    props: dict = schema.get("properties") or {}
+    if not props:
+        return None
+
+    required: set = set(schema.get("required") or [])
+    fields: dict[str, Any] = {}
+
+    for fname, fschema in props.items():
+        py_type = _JSON_TYPE_MAP.get(fschema.get("type", "string"), str)
+        desc = fschema.get("description", "")
+        if fname in required:
+            fields[fname] = (py_type, Field(description=desc))
+        else:
+            fields[fname] = (Optional[py_type], Field(default=None, description=desc))
+
+    try:
+        return create_model(model_name, **fields)
+    except Exception:
+        return None
+
+
+def _make_lc_tool(client, tool_name: str, tool_desc: str, input_schema: str = "") -> BaseTool:
+    """将远端 MCP 工具封装为 LangChain StructuredTool，携带完整参数 schema。"""
     _client = client
     _name = tool_name
 
-    @lc_tool
-    async def _dynamic(**kwargs) -> str:
-        """MCP 动态工具"""
+    async def _run(**kwargs: Any) -> str:
         return await _client.call_tool(_name, kwargs)
 
-    _dynamic.name = tool_name
-    _dynamic.description = tool_desc
-    return _dynamic
+    args_schema = _json_schema_to_pydantic(input_schema, f"{tool_name}_Args")
+
+    return StructuredTool.from_function(
+        coroutine=_run,
+        name=tool_name,
+        description=tool_desc,
+        args_schema=args_schema,  # None 时 StructuredTool 自动降级到 **kwargs
+    )

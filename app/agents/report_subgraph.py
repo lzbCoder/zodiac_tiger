@@ -7,6 +7,7 @@ from loguru import logger
 
 from app.state.report_state import ReportState
 from app.tools.report_tools import REPORT_TOOLS
+from app.agents.agent_utils import build_tool_desc_section
 
 _TOOL_MAP = {t.name: t for t in REPORT_TOOLS}
 _MAX_LOOPS = 5
@@ -44,17 +45,17 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
     loop = state.get("react_loop_count", 0)
     enable_search = config["configurable"].get("enable_search", False)
 
-    search_tool_desc = "\n- tavily_search_report：联网搜索，参数 {\"query\": \"搜索词\"}" if enable_search else ""
-
-    # 加载绑定的 MCP 动态工具
+    # 静态工具（按 enable_search 过滤 tavily）+ MCP 动态工具
+    static_tools = {
+        t.name: t for t in REPORT_TOOLS
+        if t.name != "tavily_search_report" or enable_search
+    }
     try:
-        mcp_tool_list = await GlobalMcpManager.build_tools_for_agent("report_agent")
+        mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("report_agent")}
     except Exception:
-        mcp_tool_list = []
-    mcp_tool_desc = "".join(
-        f"\n- {t.name}：{t.description}"
-        for t in mcp_tool_list
-    )
+        mcp_tools = {}
+    all_tools = {**static_tools, **mcp_tools}
+    tool_section = build_tool_desc_section(all_tools)
 
     # 技能系统提示词注入
     from app.skills.manager import GlobalSkillManager
@@ -77,10 +78,7 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
 请分析并决定下一步行动。返回纯 JSON：
 
 {{"thought": "你的分析思考", "action": "工具名或null", "action_input": {{}}, "finish": true/false}}
-
-可用工具：
-- query_sql：执行SQL查询，参数 {{"sql": "SELECT..."}}
-- read_excel：读取Excel文件，参数 {{"file_path": "路径"}}{search_tool_desc}{mcp_tool_desc}
+{tool_section}
 
 规则：
 1. 信息不足 → 调用工具查询
