@@ -109,6 +109,12 @@ _REACT_NODES = {
     "assistant_planner", "assistant_tool_executor", "assistant_observation",
 }
 
+# ReAct 进度事件应隐藏的节点（属于助手子图内部循环，对用户无信息价值）
+_HIDE_PROGRESS = {
+    "assistant_collect_task", "assistant_triage",
+    "assistant_planner", "assistant_tool_executor", "assistant_observation",
+}
+
 
 async def parse_events(stream):
     """解析 LangGraph 事件流，yield AgentEvent 实例。"""
@@ -121,42 +127,82 @@ async def parse_events(stream):
         ev = event.get("event", "")
         name = event.get("name", "")
         data = event.get("data", {})
-        meta = event.get("metadata", {})
+        meta = event.get("metadata", {}) or {}  
+        if not isinstance(meta, dict):
+            meta = {}
         tags = event.get("tags", [])
 
+        # 子图节点的 name 可能带命名空间前缀（如 "assistant_agent:assistant_planner"），
+        # langgraph_node 始终是原始短名，用于 NODE_LABELS 查表
+        _node = name if name in NODE_LABELS else meta.get("langgraph_node", "")
+        if _node and _node != name:
+            from loguru import logger as _log
+            _log.debug(f"[parse_events] 事件={ev} name={name} → fallback langgraph_node={_node}")
+
         # ReAct 循环节点：每轮独立命名（仅在 start 时递增，end 只读取）
-        if name in _REACT_NODES:
-            if ev == "on_chain_start" and name in NODE_LABELS:
-                _cycle_counts[name] = _cycle_counts.get(name, 0) + 1
-            display_name = f"{NODE_LABELS[name]} #{_cycle_counts.get(name, 1)}"
+        if _node in _REACT_NODES:
+            if ev == "on_chain_start" and _node in NODE_LABELS:
+                _cycle_counts[_node] = _cycle_counts.get(_node, 0) + 1
+            display_name = f"{NODE_LABELS[_node]} #{_cycle_counts.get(_node, 1)}"
+        elif _node:
+            display_name = NODE_LABELS.get(_node, _node)
         else:
             display_name = NODE_LABELS.get(name, name)
 
         # --- progress: 节点开始 ---
-        if ev == "on_chain_start" and name in NODE_LABELS:
-            _node_starts[name] = _now_ts()
-            parent = SUB_NODE_PARENT.get(name, "")
+        if ev == "on_chain_start" and _node and _node in NODE_LABELS:
+            _node_starts[_node] = _now_ts()
+            parent = SUB_NODE_PARENT.get(_node, "")
             meta_dict = {"parent_node": parent} if parent else {}
             # ReAct 节点：从 input 读取 react_loop_count，确保与 end 一致
-            if name in _REACT_NODES:
+            if _node in _REACT_NODES:
                 input_round = data.get("input", {}).get("react_loop_count", 0)
-                if name == "planner":
+                if _node == "planner":
                     react_round = input_round + 1  # planner 自增 1
                 else:
                     react_round = input_round      # tool_executor/observation 透传
-                _react_rounds[name] = react_round
+                _react_rounds[_node] = react_round
                 meta_dict["react_round"] = react_round
-            yield AgentEvent(
-                event_type="progress", name=display_name,
-                status="running", content=name,
-                metadata=meta_dict,
-            )
+            # 隐藏助手子图内部循环的进度事件（配置、分析、ReAct 循环）
+            if _node not in _HIDE_PROGRESS:
+                yield AgentEvent(
+                    event_type="progress", name=display_name,
+                    status="running", content=_node,
+                    metadata=meta_dict,
+                )
+
+            # 对 planner 节点，在开始执行时预发射一次 plan 事件
+            # 将第一个 pending 步骤置为 in_progress，让前端提前展示转圈动画
+            if _node in ("assistant_planner", "planner"):
+                _input = data.get("input", {}) or {}
+                if isinstance(_input, dict):
+                    _steps = _input.get("plan_steps")
+                    if _steps:
+                        _updated = [dict(s) for s in _steps]
+                        for _s in _updated:
+                            if _s.get("status") == "pending":
+                                _s["status"] = "in_progress"
+                                break
+                        yield AgentEvent(
+                            event_type="plan", name="执行计划",
+                            status="running",
+                            metadata={"steps": _updated, "parent_node": "智能助手"},
+                        )
 
         # --- progress: 节点完成 ---
-        elif ev == "on_chain_end" and name in NODE_LABELS:
+        elif ev == "on_chain_end" and (name in NODE_LABELS or meta.get("langgraph_node", "") in NODE_LABELS):
+            # 子图节点的 name 可能是 namespaced（如 "assistant_agent:assistant_planner"），
+            # langgraph_node 始终是原始短名，兜底使用
+            _chain_name = name if name in NODE_LABELS else meta.get("langgraph_node", name)
+            if _chain_name != name:
+                from loguru import logger as _log
+                _log.info(f"[parse_events] on_chain_end name={name} → fallback langgraph_node={_chain_name}")
+            name = _chain_name
             start = _node_starts.pop(name, _now_ts())
             cost = _now_ts() - start
-            output = data.get("output", {})
+            output = data.get("output", {}) or {}
+            if not isinstance(output, dict):
+                output = {}
             raw_intent = output.get("intent", "")
             label_intent = INTENT_LABELS.get(raw_intent, raw_intent)
             meta_dict = {"intent": label_intent} if raw_intent and name == "dispatcher" else {}
@@ -194,15 +240,20 @@ async def parse_events(stream):
                 if answer:
                     meta_dict["detail"] = answer[:300]
 
-            yield AgentEvent(
-                event_type="progress", name=display_name,
-                status="completed", cost_ms=cost,
-                metadata=meta_dict,
-            )
+            # 隐藏助手子图内部循环的进度事件（与 on_chain_start 一致）
+            if name not in _HIDE_PROGRESS:
+                yield AgentEvent(
+                    event_type="progress", name=display_name,
+                    status="completed", cost_ms=cost,
+                    metadata=meta_dict,
+                )
 
-            # --- plan: 复杂任务步骤计划（triage 生成 / planner 每轮更新） ---
+            # --- plan: 复杂任务步骤计划（triage 生成 / planner 每轮更新）---
+            # 即使节点进度被隐藏，计划仍须发射（从 triage 或 planner 输出提取）
             plan_steps = output.get("plan_steps")
             if plan_steps:
+                from loguru import logger as _log
+                _log.info(f"[plan] 节点={name} langgraph_node={meta.get('langgraph_node', '')} 步骤数={len(plan_steps)} 状态={[s.get('status') for s in plan_steps]}")
                 all_done = all(s.get("status") == "done" for s in plan_steps)
                 yield AgentEvent(
                     event_type="plan", name="执行计划",
@@ -235,6 +286,23 @@ async def parse_events(stream):
             output = data.get("output", {})
             content = output.content if hasattr(output, "content") else str(output)[:500]
             raw = meta.get("langgraph_node", name)
+            # 跳过被隐藏节点的 thought 事件（防止"分析思考 #1"等出现在智能助手子步骤中）
+            if raw in _HIDE_PROGRESS:
+                # 对 planner 节点不直接跳过，改为发射 plan_step_detail 事件供前端实时更新当前步骤 detail
+                if raw in ("assistant_planner", "planner"):
+                    # 解析 LLM 的 JSON 响应，只提取 thought 文本（去掉原始 JSON 结构）
+                    _thought = content
+                    try:
+                        _parsed = json.loads(content)
+                        if isinstance(_parsed, dict):
+                            _thought = _parsed.get("thought", "") or _parsed.get("thought", content)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    yield AgentEvent(
+                        event_type="plan_step_detail", name="planner",
+                        status="completed", content=_thought[:2000],
+                    )
+                continue
             if raw in _REACT_NODES:
                 thought_name = f"{NODE_LABELS[raw]} #{_cycle_counts.get(raw, 1)}"
             else:

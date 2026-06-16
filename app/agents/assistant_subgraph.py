@@ -46,20 +46,25 @@ async def triage_node(state: AssistantState, config: RunnableConfig) -> dict:
     from app.config import settings
 
     task = state.get("task", "")
+    # 启发式：非常简短的问题（<20 字）直接视为简单任务，跳过 LLM 调用
+    if len(task) < 20:
+        return {"complexity": "simple", "plan_steps": []}
+
     prompt = f"""你是任务分流助手。判断下面用户任务是「简单」还是「复杂」，并在复杂时拆解为有序步骤。
 
 用户任务：{task}
 
-判定标准：
+判定标准（请严格遵循）：
 - simple：单一、直接的请求（问答、闲聊、简短文案、单步操作），无需多步骤即可完成。
 - complex：需要多步骤协作的请求（如先调研再对比再总结、多来源汇总、含先后依赖的任务）。
+- 注意：不清楚用户需要多步骤时，默认 simple，不要过度拆解。
 
 返回纯 JSON：
 {{"complexity": "simple"或"complex", "plan": ["步骤1", "步骤2", ...]}}
 
 规则：
 1. simple 时 plan 返回空数组 []。
-2. complex 时 plan 给出 2~6 个简洁、可执行的步骤描述（每条不超过 30 字）。
+2. complex 时 plan 给出 2~6 个简洁、可执行的步骤描述（每条不超过 15 字，**必须是对用户有意义的描述**）。
 3. 只返回 JSON，不要其他内容。"""
 
     llm = create_llm(settings.INTENT_MODEL, streaming=False, tags=["skip_stream"])
@@ -75,12 +80,18 @@ async def triage_node(state: AssistantState, config: RunnableConfig) -> dict:
         logger.warning(f"[assistant] Triage JSON 解析失败: {resp.content[:200]}")
         complexity, plan = "simple", []
 
+    # 如果判定为 simple、无计划、或所有描述都为空，返回简单模式
     if complexity != "complex" or not plan:
         return {"complexity": "simple", "plan_steps": []}
 
+    # 过滤掉空描述，避免前端展示 plan-0、plan-1 等无意义条目
+    valid_plan = [str(desc).strip() for desc in plan if str(desc).strip()]
+    if not valid_plan:
+        return {"complexity": "simple", "plan_steps": []}
+
     plan_steps = [
-        {"index": i, "description": str(desc), "status": "pending"}
-        for i, desc in enumerate(plan)
+        {"index": i, "description": desc, "status": "pending"}
+        for i, desc in enumerate(valid_plan)
     ]
     return {"complexity": "complex", "plan_steps": plan_steps}
 
@@ -131,12 +142,12 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
         )
         plan_section = (
             f"\n\n执行计划（共 {len(plan_steps)} 步，按 index 顺序推进）：\n{steps_lines}\n"
-            "请聚焦当前待执行的步骤，完成后在 JSON 中标记。"
+            "请严格一次只处理一个步骤。重点聚焦当前处于 [in_progress] 或最早 [pending] 的步骤。"
         )
         plan_json_fields = ', "current_step": 当前步骤index整数, "step_done": true/false'
         plan_rules = (
-            "\n5. current_step 为你本轮正在处理的步骤 index（从 0 开始）"
-            "\n6. 该步骤已完成时 step_done=true；仅当所有步骤都完成后才 finish=true"
+            "\n5. step_done=true 仅标记当前这一步完成，不要跨步。"
+            "\n6. 所有步骤都完成后才设置 finish=true；还有未完成步骤时 finish=false 继续循环。"
         )
     else:
         plan_section = ""
@@ -190,25 +201,45 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
     }
 
     if is_complex:
-        cur = decision.get("current_step")
-        step_done = bool(decision.get("step_done", False))
+        # 确定当前真正的活跃步骤（第一个未完成的步骤）
+        active_idx = None
         for s in plan_steps:
-            if s["status"] == "done":
-                continue
-            if cur is not None and isinstance(cur, int):
-                if s["index"] < cur:
-                    s["status"] = "done"          # 已跳过的前置步骤视为完成
-                elif s["index"] == cur:
-                    s["status"] = "done" if step_done else "in_progress"
-        all_done = all(s["status"] == "done" for s in plan_steps)
-        # 没有进行中的步骤时，把第一个未完成步骤置为 in_progress
-        if not all_done and not any(s["status"] == "in_progress" for s in plan_steps):
+            if s["status"] == "in_progress":
+                active_idx = s["index"]
+                break
+            if s["status"] != "done":
+                active_idx = s["index"]
+                break
+
+        if active_idx is not None:
+            step_done = bool(decision.get("step_done", False))
+            # 强制：LLM 只能处理当前活跃步骤，不允许跳步
+            active = active_idx
             for s in plan_steps:
-                if s["status"] != "done":
-                    s["status"] = "in_progress"
-                    break
+                if s["index"] < active:
+                    s["status"] = "done"
+                elif s["index"] == active:
+                    s["status"] = "done" if step_done else "in_progress"
+                    s["detail"] = decision.get("thought", "")[:1000] if step_done else ""
+
+            all_done = all(s["status"] == "done" for s in plan_steps)
+            # 如果当前步骤已完成但后面还有步骤，不让 graph 提前结束
+            if step_done and not all_done:
+                result["is_finish"] = False
+            else:
+                result["is_finish"] = all_done or new_loop >= _MAX_LOOPS
+
+            # 确保有一个进行中的步骤
+            if not all_done and not any(s["status"] == "in_progress" for s in plan_steps):
+                for s in plan_steps:
+                    if s["status"] != "done":
+                        s["status"] = "in_progress"
+                        break
+        else:
+            all_done = True
+            result["is_finish"] = True
+
         result["plan_steps"] = plan_steps
-        result["is_finish"] = all_done or new_loop >= _MAX_LOOPS
     else:
         result["is_finish"] = decision.get("finish", False) or new_loop >= _MAX_LOOPS
 
