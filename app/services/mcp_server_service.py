@@ -49,7 +49,7 @@ async def save_server(data: dict) -> dict:
             ))
         await session.commit()
 
-    GlobalMcpManager.reload(mcp_key, data["endpoint_url"], data.get("auth_headers", {}))
+    await GlobalMcpManager.reload(mcp_key, data["endpoint_url"], data.get("auth_headers", {}))
     return {"mcp_key": mcp_key}
 
 
@@ -64,7 +64,7 @@ async def delete_server(mcp_key: str):
         await session.execute(delete(McpServerConfig).where(McpServerConfig.mcp_key == mcp_key))
         await session.commit()
 
-    GlobalMcpManager.remove(mcp_key)
+    await GlobalMcpManager.remove(mcp_key)
 
 
 async def toggle_enable_status(mcp_key: str, enable_status: int):
@@ -80,7 +80,7 @@ async def toggle_enable_status(mcp_key: str, enable_status: int):
         await session.commit()
 
     if enable_status == 0:
-        GlobalMcpManager.remove(mcp_key)
+        await GlobalMcpManager.remove(mcp_key)
     else:
         # 重新加载配置到缓存
         async with get_db_session() as session:
@@ -88,7 +88,7 @@ async def toggle_enable_status(mcp_key: str, enable_status: int):
                 select(McpServerConfig).where(McpServerConfig.mcp_key == mcp_key)
             )).scalar_one_or_none()
         if row:
-            GlobalMcpManager.reload(mcp_key, row.endpoint_url, row.auth_headers or {})
+            await GlobalMcpManager.reload(mcp_key, row.endpoint_url, row.auth_headers or {})
 
 
 async def test_connect(endpoint_url: str, auth_headers: dict) -> dict:
