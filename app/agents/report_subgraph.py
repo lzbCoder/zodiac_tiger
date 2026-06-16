@@ -34,7 +34,7 @@ async def collect_task_node(state: ReportState, config: RunnableConfig) -> dict:
 async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
     from app.factory.llm_factory import create_llm
     from app.config import settings
-    from app.mcp.manager import GlobalMcpManager
+    from app.mcp.mcp_manager import GlobalMcpManager
 
     brief_obs = [
         {"tool": o.get("tool", "unknown"), "summary": str(o.get("result", ""))[:300]}
@@ -113,7 +113,7 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
 # ---- 节点 3：工具执行 ----
 
 async def tool_executor_node(state: ReportState, config: RunnableConfig) -> dict:
-    from app.mcp.manager import GlobalMcpManager
+    from app.mcp.mcp_manager import GlobalMcpManager
 
     # 直接读取 planner 保存的工具调用信息，无需再次调用 LLM 提取
     tool_name = state.get("current_action", "") or ""

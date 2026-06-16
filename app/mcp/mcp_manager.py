@@ -42,7 +42,7 @@ class GlobalMcpManager:
     @classmethod
     def get_client(cls, mcp_key: str):
         """按 mcp_key 返回新 McpStreamHttpClient 实例（使用缓存配置，不建连）。"""
-        from app.mcp.sdk_client import McpStreamHttpClient
+        from app.mcp.mcp_sdk_client import McpStreamHttpClient
         cfg = cls._config_cache[mcp_key]
         return McpStreamHttpClient(
             mcp_key=mcp_key,

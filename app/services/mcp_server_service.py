@@ -19,7 +19,7 @@ async def list_servers() -> list[dict]:
 
 async def save_server(data: dict) -> dict:
     """新增或编辑 MCP 服务配置，完成后刷新全局缓存。"""
-    from app.mcp.manager import GlobalMcpManager
+    from app.mcp.mcp_manager import GlobalMcpManager
 
     mcp_key = data["mcp_key"]
     async with get_db_session() as session:
@@ -55,7 +55,7 @@ async def save_server(data: dict) -> dict:
 
 async def delete_server(mcp_key: str):
     """级联删除：配置 + 工具清单 + Agent 绑定关系。"""
-    from app.mcp.manager import GlobalMcpManager
+    from app.mcp.mcp_manager import GlobalMcpManager
     from app.models.agent_mcp_rel import AgentMcpRel
 
     async with get_db_session() as session:
@@ -69,7 +69,7 @@ async def delete_server(mcp_key: str):
 
 async def toggle_enable_status(mcp_key: str, enable_status: int):
     """启用/禁用 MCP 服务，同步刷新缓存。"""
-    from app.mcp.manager import GlobalMcpManager
+    from app.mcp.mcp_manager import GlobalMcpManager
 
     async with get_db_session() as session:
         await session.execute(
@@ -93,7 +93,7 @@ async def toggle_enable_status(mcp_key: str, enable_status: int):
 
 async def test_connect(endpoint_url: str, auth_headers: dict) -> dict:
     """仅测试连通性，不入库，返回 {ok, message, tool_count}。"""
-    from app.mcp.sdk_client import McpStreamHttpClient
+    from app.mcp.mcp_sdk_client import McpStreamHttpClient
     client = McpStreamHttpClient("_test", endpoint_url, auth_headers)
     ok, msg, tools = await client.test_and_list_tools()
     return {"ok": ok, "message": msg, "tool_count": len(tools)}
@@ -104,7 +104,7 @@ async def sync_tools(mcp_key: str) -> int:
     拉取远端工具列表，全量写入 mcp_tool_info（保留已有 is_allow 值），
     同时更新 connect_status 和 last_check_time，返回同步工具数量。
     """
-    from app.mcp.sdk_client import McpStreamHttpClient
+    from app.mcp.mcp_sdk_client import McpStreamHttpClient
 
     async with get_db_session() as session:
         row = (await session.execute(

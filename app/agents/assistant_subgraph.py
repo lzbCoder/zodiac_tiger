@@ -39,7 +39,7 @@ async def collect_task_node(state: AssistantState, config: RunnableConfig) -> di
 async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
     from app.factory.llm_factory import create_llm
     from app.config import settings
-    from app.mcp.manager import GlobalMcpManager
+    from app.mcp.mcp_manager import GlobalMcpManager
 
     enable_search = config["configurable"].get("enable_search", False)
     loop = state.get("react_loop_count", 0)
@@ -121,7 +121,7 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
 # ---- 节点 3：工具执行 ----
 
 async def tool_executor_node(state: AssistantState, config: RunnableConfig) -> dict:
-    from app.mcp.manager import GlobalMcpManager
+    from app.mcp.mcp_manager import GlobalMcpManager
 
     enable_search = config["configurable"].get("enable_search", False)
     static_tools = _build_tool_map(enable_search)
@@ -223,7 +223,7 @@ def route_after_planner(state: AssistantState) -> str:
 
 # ---- 构建子图 ----
 
-def add_assistant_agent() -> StateGraph:
+def build_assistant_agent() -> StateGraph:
     sub = StateGraph(AssistantState)
 
     sub.add_node("assistant_collect_task",     collect_task_node)
