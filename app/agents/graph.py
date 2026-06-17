@@ -31,12 +31,12 @@ def route_by_format(state: AgentState) -> Literal["document_agent", "__end__"]:
 def _build_workflow() -> StateGraph:
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("memory_recall", memory_recall_node)
+    workflow.add_node("memory_recall", memory_recall_node)        
     workflow.add_node("dispatcher", dispatcher_node)
-    workflow.add_node("report_agent", build_report_subgraph())  # 数据分析子图：继承主图 checkpointer
-    workflow.add_node("travel_agent", build_travel_subgraph())  # 旅游规划子图：继承主图 checkpointer
+    workflow.add_node("report_agent", build_report_subgraph())     # 数据分析子图：继承主图 checkpointer
+    workflow.add_node("travel_agent", build_travel_subgraph())     # 旅游规划子图：继承主图 checkpointer
     workflow.add_node("assistant_agent", build_assistant_agent())  # 综合助手子图：继承主图 checkpointer
-    workflow.add_node("chat_agent", chat_agent_node)
+    workflow.add_node("chat_agent", chat_agent_node)               # 闲聊对话
     workflow.add_node("document_agent", document_agent_node)
     workflow.add_node("memory_extraction", memory_extraction_node)
 

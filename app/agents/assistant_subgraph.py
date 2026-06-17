@@ -82,67 +82,133 @@ async def triage_node(state: AssistantState, config: RunnableConfig) -> dict:
     return {"complexity": "complex", "plan_steps": plan_steps}
 
 
-# ---- 节点 3：Planner（思考决策） ----
+# ---- Planner 私有辅助函数 ----
 
-async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
-    from app.factory.llm_factory import create_llm
-    from app.config import settings
+async def _collect_agent_tools(enable_search: bool) -> dict:
+    """合并静态工具与 MCP 动态工具，构建完整工具映射表。"""
     from app.mcp.mcp_manager import GlobalMcpManager
-
-    enable_search = config["configurable"].get("enable_search", False)
-    loop = state.get("react_loop_count", 0)
-
-    # 静态工具 + MCP 动态工具合并
     static_tools = _build_tool_map(enable_search)
     try:
         mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("assistant_agent")}
     except Exception:
         mcp_tools = {}
-    all_tools: dict = {**static_tools, **mcp_tools}
+    return {**static_tools, **mcp_tools}
 
-    # 技能系统提示词注入
+
+async def _build_skill_context() -> str:
+    """获取 assistant_agent 绑定的技能提示词并拼接为上下文段落。"""
     from app.skills.manager import GlobalSkillManager
     try:
         skill_list = await GlobalSkillManager.get_skills_for_agent("assistant_agent")
     except Exception:
         skill_list = []
-    skill_context = ""
-    if skill_list:
-        parts = [f"【{s['skill_name']}】\n{s['system_prompt']}"
-                 for s in skill_list if s.get("system_prompt")]
-        if parts:
-            skill_context = "\n\n已加载本地技能（请参考其指令执行）：\n" + "\n\n".join(parts)
+    if not skill_list:
+        return ""
+    parts = [f"【{s['skill_name']}】\n{s['system_prompt']}"
+             for s in skill_list if s.get("system_prompt")]
+    if not parts:
+        return ""
+    return "\n\n已加载本地技能（请参考其指令执行）：\n" + "\n\n".join(parts)
 
-    brief_obs = [
+
+def _build_obs_text(observations: list) -> str:
+    """将观察列表压缩为 JSON 字符串，每条结果截断至 300 字符，避免 prompt 过长。"""
+    brief = [
         {"tool": o.get("tool", "unknown"), "summary": str(o.get("result", ""))[:300]}
-        for o in state.get("observations", [])
+        for o in observations
     ]
-    obs_text = json.dumps(brief_obs, ensure_ascii=False)
+    return json.dumps(brief, ensure_ascii=False)
 
-    # 计划感知：复杂任务注入步骤清单与当前进度（深拷贝，避免直接改写 state 内字典）
+
+def _build_plan_prompt_parts(plan_steps: list) -> tuple[str, str, str]:
+    """根据步骤清单生成 prompt 的计划段、JSON 字段提示和规则说明。无计划时全返回空串。"""
+    if not plan_steps:
+        return "", "", ""
+    steps_lines = "\n".join(
+        f"  {s['index']}. [{s['status']}] {s['description']}" for s in plan_steps
+    )
+    plan_section = (
+        f"\n\n执行计划（共 {len(plan_steps)} 步，按 index 顺序推进）：\n{steps_lines}\n"
+        "请严格一次只处理一个步骤。重点聚焦当前处于 [in_progress] 或最早 [pending] 的步骤。"
+    )
+    plan_json_fields = ', "current_step": 当前步骤index整数, "step_done": true/false'
+    plan_rules = (
+        "\n5. step_done=true 仅标记当前这一步完成，不要跨步。"
+        "\n6. 所有步骤都完成后才设置 finish=true；还有未完成步骤时 finish=false 继续循环。"
+    )
+    return plan_section, plan_json_fields, plan_rules
+
+
+def _apply_plan_step_update(
+    plan_steps: list, decision: dict, new_loop: int
+) -> tuple[list, bool]:
+    """根据 LLM 决策更新计划步骤状态，返回 (更新后步骤列表, is_finish)。
+
+    规则：每次只推进最早的活跃步骤；全部完成或达到循环上限时结束。
+    """
+    # 找到活跃步骤：优先 in_progress，否则取最早 pending
+    active_idx = None
+    for s in plan_steps:
+        if s["status"] == "in_progress":
+            active_idx = s["index"]
+            break
+        if s["status"] != "done":
+            active_idx = s["index"]
+            break
+
+    if active_idx is None:
+        return plan_steps, True
+
+    step_done = bool(decision.get("step_done", False))
+    for s in plan_steps:
+        if s["index"] < active_idx:
+            # 早于活跃步骤的强制标为完成，防止跳步导致状态混乱
+            s["status"] = "done"
+        elif s["index"] == active_idx:
+            s["status"] = "done" if step_done else "in_progress"
+            s["detail"] = decision.get("thought", "")[:1000] if step_done else ""
+
+    all_done = all(s["status"] == "done" for s in plan_steps)
+
+    # 当前步骤完成但还有后续步骤 → 继续循环，不提前结束
+    if step_done and not all_done:
+        is_finish = False
+    else:
+        is_finish = all_done or new_loop >= _MAX_LOOPS
+
+    # 确保始终有一个 in_progress 步骤，防止前端展示空白
+    if not all_done and not any(s["status"] == "in_progress" for s in plan_steps):
+        for s in plan_steps:
+            if s["status"] != "done":
+                s["status"] = "in_progress"
+                break
+
+    return plan_steps, is_finish
+
+
+# ---- 节点 3：Planner（思考决策） ----
+
+async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
+    from app.factory.llm_factory import create_llm
+    from app.config import settings
+
+    enable_search = config["configurable"].get("enable_search", False)
+    loop = state.get("react_loop_count", 0)
+
+    # 构建工具集、技能上下文、观察摘要
+    all_tools = await _collect_agent_tools(enable_search)
+    skill_context = await _build_skill_context()
+    obs_text = _build_obs_text(state.get("observations", []))
+
+    # 深拷贝计划步骤（避免直接修改 state 内字典），生成计划相关 prompt 段落
     plan_steps = [dict(s) for s in (state.get("plan_steps") or [])]
     is_complex = bool(plan_steps)
-    if is_complex:
-        steps_lines = "\n".join(
-            f"  {s['index']}. [{s['status']}] {s['description']}" for s in plan_steps
-        )
-        plan_section = (
-            f"\n\n执行计划（共 {len(plan_steps)} 步，按 index 顺序推进）：\n{steps_lines}\n"
-            "请严格一次只处理一个步骤。重点聚焦当前处于 [in_progress] 或最早 [pending] 的步骤。"
-        )
-        plan_json_fields = ', "current_step": 当前步骤index整数, "step_done": true/false'
-        plan_rules = (
-            "\n5. step_done=true 仅标记当前这一步完成，不要跨步。"
-            "\n6. 所有步骤都完成后才设置 finish=true；还有未完成步骤时 finish=false 继续循环。"
-        )
-    else:
-        plan_section = ""
-        plan_json_fields = ""
-        plan_rules = ""
+    plan_section, plan_json_fields, plan_rules = _build_plan_prompt_parts(plan_steps)
 
     tool_section = build_tool_desc_section(all_tools)
     no_tool_note = "\n注意：当前无可用工具，请直接基于知识回答，将 finish 设为 true。" if not all_tools else ""
 
+    # 调用 Planner LLM，获取思考/行动决策
     prompt = render(
         "assistant_planner",
         task=state.get("task", ""),
@@ -156,7 +222,6 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
         no_tool_note=no_tool_note,
         plan_rules=plan_rules,
     )
-
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
     resp = await llm.ainvoke(prompt)
     try:
@@ -177,45 +242,9 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
     }
 
     if is_complex:
-        # 确定当前真正的活跃步骤（第一个未完成的步骤）
-        active_idx = None
-        for s in plan_steps:
-            if s["status"] == "in_progress":
-                active_idx = s["index"]
-                break
-            if s["status"] != "done":
-                active_idx = s["index"]
-                break
-
-        if active_idx is not None:
-            step_done = bool(decision.get("step_done", False))
-            # 强制：LLM 只能处理当前活跃步骤，不允许跳步
-            active = active_idx
-            for s in plan_steps:
-                if s["index"] < active:
-                    s["status"] = "done"
-                elif s["index"] == active:
-                    s["status"] = "done" if step_done else "in_progress"
-                    s["detail"] = decision.get("thought", "")[:1000] if step_done else ""
-
-            all_done = all(s["status"] == "done" for s in plan_steps)
-            # 如果当前步骤已完成但后面还有步骤，不让 graph 提前结束
-            if step_done and not all_done:
-                result["is_finish"] = False
-            else:
-                result["is_finish"] = all_done or new_loop >= _MAX_LOOPS
-
-            # 确保有一个进行中的步骤
-            if not all_done and not any(s["status"] == "in_progress" for s in plan_steps):
-                for s in plan_steps:
-                    if s["status"] != "done":
-                        s["status"] = "in_progress"
-                        break
-        else:
-            all_done = True
-            result["is_finish"] = True
-
+        plan_steps, is_finish = _apply_plan_step_update(plan_steps, decision, new_loop)
         result["plan_steps"] = plan_steps
+        result["is_finish"] = is_finish
     else:
         result["is_finish"] = decision.get("finish", False) or new_loop >= _MAX_LOOPS
 
@@ -225,15 +254,8 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
 # ---- 节点 4：工具执行 ----
 
 async def tool_executor_node(state: AssistantState, config: RunnableConfig) -> dict:
-    from app.mcp.mcp_manager import GlobalMcpManager
-
     enable_search = config["configurable"].get("enable_search", False)
-    static_tools = _build_tool_map(enable_search)
-    try:
-        mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("assistant_agent")}
-    except Exception:
-        mcp_tools = {}
-    tool_map = {**static_tools, **mcp_tools}
+    tool_map = await _collect_agent_tools(enable_search)
 
     tool_name = state.get("current_action", "") or ""
     tool_args = state.get("current_action_input", {}) or {}
