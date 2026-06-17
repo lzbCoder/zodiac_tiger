@@ -10,6 +10,7 @@ from loguru import logger
 from app.db.session import get_db_session
 from app.db.milvus import get_episodic_collection
 from app.models.user_profile import UserProfile
+from app.prompts.loader import render
 from app.utils.embedding import embed
 from app.config import settings
 
@@ -163,41 +164,7 @@ async def extract_and_save(
 
     llm = create_llm(settings.MEMORY_SUMMARY_MODEL)
 
-    prompt = f"""请从以下对话中提取值得长期记忆的信息。
-
-包括：
-- 用户偏好（喜欢/不喜欢什么）
-- 长期目标（计划做什么）
-- 稳定习惯（经常做什么）
-- 重要事件（发生了什么）
-- 人际关系（认识谁）
-
-不要提取：
-- 临时聊天内容
-- 一次性问题
-- 无长期价值的信息
-
-用户消息: {user_message}
-AI回复: {ai_response}
-
-返回纯 JSON 数组格式，不要包含 markdown 代码块标记：
-[{{"type": "preference|goal|habit|event|relationship", "content": "记忆内容", "summary": "简短摘要", "importance": 0.0-1.0}}]
-
-如果没有值得保存的内容，返回 []。
-
-示例：
-用户消息: 我叫李志斌，今年28岁，是一名软件工程师
-AI回复: 你好李志斌！很高兴认识你
-返回: [{{"type": "preference", "content": "用户职业是软件工程师", "summary": "软件工程师", "importance": 0.8}}, {{"type": "preference", "content": "用户年龄28岁", "summary": "28岁", "importance": 0.6}}, {{"type": "relationship", "content": "用户自我介绍叫李志斌", "summary": "用户姓名李志斌", "importance": 0.7}}]
-
-用户消息: 我喜欢吃香蕉，还喜欢打篮球
-AI回复: 香蕉很健康，打篮球也是好运动！
-返回: [{{"type": "preference", "content": "用户喜欢吃香蕉", "summary": "喜欢吃香蕉", "importance": 0.7}}, {{"type": "habit", "content": "用户喜欢打篮球", "summary": "喜欢打篮球", "importance": 0.6}}]
-
-用户消息: 今天去超市买了些东西
-AI回复: 好的，购物愉快！
-返回: []
-"""
+    prompt = render("memory_extract", user_message=user_message, ai_response=ai_response)
 
     resp = await llm.ainvoke(prompt)
 

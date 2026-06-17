@@ -6,42 +6,7 @@ from app.config import settings
 from app.db.session import get_db_session
 from app.db.checkpoint import cleanup_checkpoints, cleanup_expired_blobs
 from app.models.conversation_summary import ConversationSummary
-
-
-SUMMARY_PROMPT = """你是一个会话压缩系统。
-
-目标：
-在尽量少 token 下，
-保留未来对话需要的重要上下文。
-
-保留：
-- 用户目标
-- 用户偏好
-- 已完成步骤
-- 当前计划
-- 未解决问题
-- 重要实体
-
-删除：
-- 寒暄
-- 重复内容
-- 无意义闲聊
-- 临时工具输出
-
-输出要求：
-- 简洁
-- 结构化
-- 不超过300字
-
-输出结构化摘要：
-{
-  "goal": "目标描述",
-  "preferences": ["偏好1", "偏好2"],
-  "completed": ["已完成事项"],
-  "pending": ["待解决问题"]
-}
-
-请直接输出 JSON，不要包含 markdown 代码块标记。"""
+from app.prompts.loader import render
 
 
 async def _generate_summary(messages: list, existing_summary: str) -> str:
@@ -54,11 +19,7 @@ async def _generate_summary(messages: list, existing_summary: str) -> str:
         for m in messages[-30:]
     )
 
-    prompt = (
-        f"{SUMMARY_PROMPT}\n\n"
-        f"已有摘要（如有）：{existing_summary or '无'}\n\n"
-        f"最近对话：\n{history}"
-    )
+    prompt = render("summary_compress", existing_summary=existing_summary or "无", history=history)
 
     resp = await llm.ainvoke(prompt)
     text = resp.content.strip()

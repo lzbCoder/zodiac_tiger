@@ -5,6 +5,7 @@ from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
 from app.state.travel_state import TravelState
+from app.prompts.loader import render
 
 # 必填参数
 _REQUIRED = ["traveler_count", "budget", "days", "origin", "destination"]
@@ -31,12 +32,7 @@ async def collect_params_node(state: TravelState, config: RunnableConfig) -> dic
             break
 
     llm = create_llm(settings.INTENT_MODEL, streaming=False)
-    prompt = (
-        "从用户问题中提取旅游参数，返回 JSON：\n"
-        '{{"traveler_count": 人数, "budget": 预算元, "days": 天数, "origin": "出发地", "destination": "目的地"}}\n'
-        "未提及的字段填 null。只返回 JSON，不要解释。\n\n"
-        f"用户问题：{user_msg}"
-    )
+    prompt = render("travel_collect_params", user_msg=user_msg)
     resp = await llm.ainvoke(prompt)
     try:
         import json
@@ -140,12 +136,7 @@ async def generate_plan_node(state: TravelState, config: RunnableConfig) -> dict
             break
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
-    prompt = (
-        "你是专业旅行规划师，根据以下信息生成详细行程：\n\n"
-        f"【用户信息】\n{ctx}\n\n"
-        f"【用户原始需求】\n{user_msg}\n\n"
-        "输出格式：\n## 行程概览\n## 每日详细安排\n## 预算分配\n## 天气建议\n## 出行提示"
-    )
+    prompt = render("travel_generate_plan", ctx=str(ctx), user_msg=user_msg)
 
     enable_search = config["configurable"].get("enable_search", False)
     if enable_search:

@@ -7,7 +7,8 @@ from loguru import logger
 
 from app.state.assistant_state import AssistantState
 from app.tools.web_search import web_search as web_search_tool
-from app.agents.agent_utils import tool_schema_text, build_tool_desc_section
+from app.agents.agent_utils import build_tool_desc_section
+from app.prompts.loader import render
 
 _MAX_LOOPS = 10
 
@@ -51,23 +52,7 @@ async def triage_node(state: AssistantState, config: RunnableConfig) -> dict:
     if len(task) < 20:
         return {"complexity": "simple", "plan_steps": []}
 
-    prompt = f"""你是任务分流助手。判断下面用户任务是「简单」还是「复杂」，并在复杂时拆解为有序步骤。
-
-用户任务：{task}
-
-判定标准（请严格遵循）：
-- simple：单一、直接的请求（问答、闲聊、简短文案、单步操作），无需多步骤即可完成。
-- complex：需要多步骤协作的请求（如先调研再对比再总结、多来源汇总、含先后依赖的任务）。
-- 注意：不清楚用户需要多步骤时，默认 simple，不要过度拆解。
-
-返回纯 JSON：
-{{"complexity": "simple"或"complex", "plan": ["步骤1", "步骤2", ...]}}
-
-规则：
-1. simple 时 plan 返回空数组 []。
-2. complex 时 plan 给出 2~6 个简洁、可执行的步骤描述（每条不超过 15 字，**必须是对用户有意义的描述**）。
-3. 只返回 JSON，不要其他内容。"""
-
+    prompt = render("assistant_triage", task=task)
     llm = create_llm(settings.INTENT_MODEL, streaming=False, tags=["skip_stream"])
     resp = await llm.ainvoke(prompt)
     try:
@@ -158,21 +143,19 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
     tool_section = build_tool_desc_section(all_tools)
     no_tool_note = "\n注意：当前无可用工具，请直接基于知识回答，将 finish 设为 true。" if not all_tools else ""
 
-    prompt = f"""你是越群山综合智能助手，负责处理报表、旅游之外的各类任务。当前任务：{state.get('task', '')}{skill_context}{plan_section}
-
-历史观察结果：{obs_text if obs_text != '[]' else '无'}
-已执行循环次数：{loop} / {_MAX_LOOPS}
-
-请分析并决定下一步行动。返回纯 JSON：
-
-{{"thought": "你的分析思考", "action": "工具名或null", "action_input": {{}}, "finish": true/false{plan_json_fields}}}
-{tool_section}{no_tool_note}
-
-规则：
-1. 需要实时信息、最新数据 → 调用对应工具
-2. 信息足够或无工具可用 → finish=true, action=null
-3. 超过 {_MAX_LOOPS} 轮强制结束
-4. 只返回 JSON，不要其他内容{plan_rules}"""
+    prompt = render(
+        "assistant_planner",
+        task=state.get("task", ""),
+        skill_context=skill_context,
+        plan_section=plan_section,
+        obs_text=obs_text if obs_text != "[]" else "无",
+        loop=loop,
+        max_loops=_MAX_LOOPS,
+        plan_json_fields=plan_json_fields,
+        tool_section=tool_section,
+        no_tool_note=no_tool_note,
+        plan_rules=plan_rules,
+    )
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
     resp = await llm.ainvoke(prompt)
@@ -312,13 +295,7 @@ async def answer_generator_node(state: AssistantState, config: RunnableConfig) -
         obs_sections.append(f"【{o.get('tool', 'unknown')}】\n{str(o.get('result', ''))}")
     obs_text = "\n\n".join(obs_sections) if obs_sections else "无"
 
-    prompt = f"""你是越群山综合智能助手，请根据以下信息回答用户问题。
-
-用户任务：{state.get('task', '')}
-
-收集到的信息：{obs_text}
-
-请用中文回答，专业、友好、简洁。如有搜索结果，请优先基于搜索结果作答。"""
+    prompt = render("assistant_answer", task=state.get("task", ""), obs_text=obs_text)
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
     resp = await llm.ainvoke(prompt)

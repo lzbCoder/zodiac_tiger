@@ -1,0 +1,8 @@
+name: travel_collect_params
+variables: [user_msg]
+template: |
+  从用户问题中提取旅游参数，返回 JSON：
+  {"traveler_count": 人数, "budget": 预算元, "days": 天数, "origin": "出发地", "destination": "目的地"}
+  未提及的字段填 null。只返回 JSON，不要解释。
+
+  用户问题：{{ user_msg }}

@@ -1,6 +1,7 @@
 from langchain_core.runnables import RunnableConfig
 
 from app.state.agent_state import AgentState
+from app.prompts.loader import render
 
 
 def _build_memory_context(state: AgentState) -> str:
@@ -30,35 +31,7 @@ async def _build_fuzzy_prompt(state: AgentState) -> str | None:
     if not configs:
         return None
 
-    lines = ["你是越群山智能生活助手。用户正在询问你能做什么，请根据以下能力配置生成友好的结构化自我介绍。\n"]
-    lines.append("你的核心能力：\n")
-    for c in configs:
-        if not c.get("enable"):
-            continue
-        lines.append(f"{c['show_name']}")
-        lines.append(f"{c['intent_desc']}")
-        lines.append(f"示例提问：{c['demo_input']}")
-        lines.append("")
-
-    lines.append("请用热情、清晰的语言介绍自己，直接展示以上能力。格式参考：")
-    lines.append("""
-你好！我是越群山智能助手，目前支持以下核心能力：
-
-1. 🗺️ 智能旅游规划
-{能力介绍}
-示例：{示例话术}
-
-2. 📊 智能数据分析报表
-{能力介绍}
-示例：{示例话术}
-
-3. 💬 通用智能问答
-{能力介绍}
-示例：{示例话术}
-
-你可以直接修改示例提问发送给我，快速体验对应功能！
-""")
-    return "\n".join(lines)
+    return render("chat_fuzzy", configs=configs)
 
 
 async def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -90,13 +63,7 @@ async def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
         for m in history[-10:]
     )
     memory_ctx = _build_memory_context(state)
-    prompt = (
-        "你是越群山智能生活助手，一个专业的 AI 助手。请根据对话历史和用户长期记忆回答用户问题。\n\n"
-        f"{memory_ctx}"
-        f"对话历史：\n{context}\n\n"
-        f"用户最新问题：{user_message}\n\n"
-        "请用中文回答，专业、友好、简洁。"
-    )
+    prompt = render("chat_reply", memory_ctx=memory_ctx, context=context, user_message=user_message)
 
     if enable_search:
         from app.tools.executor import run_with_tools

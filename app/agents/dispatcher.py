@@ -4,6 +4,7 @@ from loguru import logger
 from langchain_core.runnables import RunnableConfig
 
 from app.state.agent_state import AgentState
+from app.prompts.loader import render
 
 
 async def dispatcher_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -41,18 +42,7 @@ async def _detect_intent(message: str, state: AgentState) -> tuple[str, str | No
 
     llm = create_llm(settings.INTENT_MODEL, tags=["skip_stream"])
 
-    prompt = (
-        "你是一个意图识别助手。根据用户输入，按以下优先级判定意图（命中即终止）：\n"
-        "- report: 数据查询、报表生成、统计分析（最高优先）\n"
-        "- travel: 旅游规划、行程安排、景点推荐\n"
-        "- chat: 纯闲聊、日常问候、无任何实质任务\n"
-        "- assistant: 除以上三类之外的所有请求（知识问答、文案撰写、事务协助等）\n\n"
-        "输出格式（仅当用户明确要求「生成/导出/下载」文件时才填）：pdf / docx / xlsx / md / html\n"
-        "重要：用户说「不生成」「不需要文档」「只要文本」等否定词时，格式必须填 none\n"
-        "如用户未指定或仅提及文档但不要求生成，输出 none\n\n"
-        f"用户输入：{message}\n\n"
-        "请只回复两个单词：intent format（如 assistant none 或 report pdf）"
-    )
+    prompt = render("dispatcher_intent", message=message)
 
     resp = await llm.ainvoke(prompt)
     parts = resp.content.strip().lower().split()

@@ -8,6 +8,7 @@ from loguru import logger
 from app.state.report_state import ReportState
 from app.tools.report_tools import REPORT_TOOLS
 from app.agents.agent_utils import build_tool_desc_section
+from app.prompts.loader import render
 
 _TOOL_MAP = {t.name: t for t in REPORT_TOOLS}
 _MAX_LOOPS = 5
@@ -70,23 +71,15 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
         if parts:
             skill_context = "\n\n已加载本地技能（请参考其指令执行）：\n" + "\n\n".join(parts)
 
-    prompt = f"""你是资深数据分析师。当前任务：{state.get('task', '')}{skill_context}
-
-历史观察结果：{obs_text if obs_text != '[]' else '无'}
-已执行循环次数：{loop} / {_MAX_LOOPS}
-
-请分析并决定下一步行动。返回纯 JSON：
-
-{{"thought": "你的分析思考", "action": "工具名或null", "action_input": {{}}, "finish": true/false}}
-{tool_section}
-
-规则：
-1. 信息不足 → 调用工具查询
-2. 信息足够 → finish=true, action=null
-3. 超过 {_MAX_LOOPS} 轮强制结束
-4. 只返回 JSON，不要其他内容
-5. 在最终报告中，用 Markdown 表格呈现数据，每张表格都包含表头和数据行
-提示：如需从多个维度展示数据，可在报告中用多张表格展示。"""
+    prompt = render(
+        "report_planner",
+        task=state.get("task", ""),
+        skill_context=skill_context,
+        obs_text=obs_text if obs_text != "[]" else "无",
+        loop=loop,
+        max_loops=_MAX_LOOPS,
+        tool_section=tool_section,
+    )
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
     resp = await llm.ainvoke(prompt)
@@ -181,22 +174,7 @@ async def report_generator_node(state: ReportState, config: RunnableConfig) -> d
     for o in raw_obs:
         obs_sections.append(f"【{o.get('tool', 'unknown')}】\n{str(o.get('result', ''))}")
     obs_text = "\n\n".join(obs_sections) if obs_sections else "无"
-    prompt = f"""你是资深数据分析师，请根据以下分析过程生成专业数据分析报告。
-
-任务：{state.get('task', '')}
-
-分析过程与数据：{obs_text}
-
-## 分析摘要
-## 关键发现
-## 数据详情
-## 行动建议
-
-在「数据详情」章节中，用 Markdown 表格呈现具体数据，每张表格都需要：
-- 一个简洁的标题行说明该表内容（如"各品类销售额统计表"）
-- 包含表头和数据行
-请用 Markdown 输出。
-注：不要自行添加"图表展示"、"数据可视化"等标题，系统会自动渲染图表。"""
+    prompt = render("report_generator", task=state.get("task", ""), obs_text=obs_text)
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
     resp = await llm.ainvoke(prompt)
