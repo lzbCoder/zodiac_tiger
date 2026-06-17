@@ -210,10 +210,6 @@ def _build_chain_end_meta(name: str, output: dict) -> tuple[dict, int]:
             obs = output.get("observations", [])
             if obs:
                 meta_dict["detail"] = f"📊 {obs[-1].get('result','')[:300]}"
-    elif name == "assistant_answer_generator":
-        answer = output.get("final_answer", "")
-        if answer:
-            meta_dict["detail"] = answer[:300]
 
     return meta_dict, cost
 
@@ -273,7 +269,7 @@ def _handle_chat_model_end(name: str, meta: dict, data: dict) -> list[AgentEvent
 
     if raw in _HIDE_PROGRESS:
         # planner 节点不直接跳过，改为发射 plan_step_detail 供前端实时更新当前步骤 detail
-        if raw in ("assistant_planner", "planner"):
+        if raw == "assistant_planner":
             # 解析 LLM JSON 响应，只提取 thought 文本（去掉原始 JSON 结构）
             _thought = content
             try:
@@ -283,7 +279,7 @@ def _handle_chat_model_end(name: str, meta: dict, data: dict) -> list[AgentEvent
             except (json.JSONDecodeError, TypeError):
                 pass
             events.append(AgentEvent(
-                event_type="plan_step_detail", name="planner",
+                event_type="plan_step_detail", name="assistant_planner",
                 status="completed", content=_thought[:2000],
             ))
         return events  # 其余隐藏节点不发射 thought 事件

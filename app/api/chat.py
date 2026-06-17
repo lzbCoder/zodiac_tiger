@@ -225,8 +225,7 @@ async def chat_stream(req: ChatRequest):
 
         finally:
             # 确保执行记录入库（即使客户端提前断开连接）
-            # 注意：此处不再调用 graph.aget_state() —— 避免在 GeneratorExit 清理路径上
-            # 复用 checkpointer 连接池中仍有 pending 查询的连接。
+            # 注意：此处不再调用 graph.aget_state() —— 避免在 GeneratorExit 清理路径上复用 checkpointer 连接池中仍有 pending 查询的连接。
             # snap 保持 None 时 summarize_and_prune 自动跳过，不影响执行记录落盘。
             if config is not None:
                 # 先标记所有仍为 running 的事件为 terminated，防止前端一直转圈
