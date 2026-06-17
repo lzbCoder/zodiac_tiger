@@ -144,8 +144,10 @@ async def generate_plan_node(state: TravelState, config: RunnableConfig) -> dict
         prompt += "\n（请使用 web_search 搜索用户问题，搜索结果中的信息优先级高于对话历史。即使对话历史中有不同信息，也必须以搜索结果为准。）"
         resp_content = await run_with_tools(llm, prompt)
     else:
-        resp = await llm.ainvoke(prompt)
-        resp_content = resp.content
+        resp_content = ""
+        async for chunk in llm.astream(prompt):
+            if chunk.content:
+                resp_content += chunk.content
 
     return {
         "travel_plan": resp_content,

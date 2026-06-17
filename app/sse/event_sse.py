@@ -258,6 +258,7 @@ def _handle_chat_model_stream(node: str, data: dict, tags: list) -> AgentEvent |
         return None
     chunk = data.get("chunk")
     if chunk and hasattr(chunk, "content") and chunk.content:
+        _log.debug(f"[token] 节点={node} chunk={chunk.content}")
         return AgentEvent(
             event_type="token", name=node,
             status="completed", content=chunk.content,

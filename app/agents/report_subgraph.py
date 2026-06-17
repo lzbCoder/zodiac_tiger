@@ -177,12 +177,15 @@ async def report_generator_node(state: ReportState, config: RunnableConfig) -> d
     prompt = render("report_generator", task=state.get("task", ""), obs_text=obs_text)
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
-    resp = await llm.ainvoke(prompt)
+    resp_content = ""
+    async for chunk in llm.astream(prompt):
+        if chunk.content:
+            resp_content += chunk.content
     return {
-        "final_report": resp.content,
-        "generate_content": resp.content,
+        "final_report": resp_content,
+        "generate_content": resp_content,
         "generate_format": state.get("generate_format", ""),
-        "messages": [{"role": "ai", "content": resp.content}],
+        "messages": [{"role": "ai", "content": resp_content}],
     }
 
 

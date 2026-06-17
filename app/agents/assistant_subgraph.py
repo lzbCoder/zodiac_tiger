@@ -320,8 +320,10 @@ async def answer_generator_node(state: AssistantState, config: RunnableConfig) -
     prompt = render("assistant_answer", task=state.get("task", ""), obs_text=obs_text)
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
-    resp = await llm.ainvoke(prompt)
-    answer = resp.content
+    answer = ""
+    async for chunk in llm.astream(prompt):
+        if chunk.content:
+            answer += chunk.content
 
     return {
         "final_answer": answer,

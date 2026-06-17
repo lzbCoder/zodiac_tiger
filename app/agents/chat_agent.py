@@ -55,7 +55,7 @@ async def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
         }
         return result
 
-    llm = create_llm(settings.CHAT_MODEL)
+    llm = create_llm(settings.CHAT_MODEL, streaming=True)
 
     history = state.get("messages", [])
     context = "\n".join(
@@ -70,8 +70,10 @@ async def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
         prompt += "\n（请使用 web_search 搜索用户问题，搜索结果中的信息优先级高于对话历史。即使对话历史中有不同信息，也必须以搜索结果为准。）"
         reply = await run_with_tools(llm, prompt)
     else:
-        resp = await llm.ainvoke(prompt)
-        reply = resp.content
+        reply = ""
+        async for chunk in llm.astream(prompt):
+            if chunk.content:
+                reply += chunk.content
 
     fmt = state.get("generate_format", "")
     is_physical = fmt and fmt not in ("none", "md")
