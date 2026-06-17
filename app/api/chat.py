@@ -115,8 +115,12 @@ async def _finalize(snap, full_content, session_id, user_id, config, events_buf)
     if full_content:
         await chat_service.save_message(session_id, "ai", full_content, config["configurable"]["chat_id"])
     elif events_buf:
-        # 流被中断（手动终止等）时仍保存 AI 消息骨架，使 execution_events 能被正确回显
-        await chat_service.save_message(session_id, "ai", "（任务已被手动终止）", config["configurable"]["chat_id"])
+        # 有 pending interrupt（旅游参数收集等正常中断）时不保存，避免产生多余的"已终止"消息
+        has_pending_interrupt = ((snap is not None and bool(getattr(snap, "interrupts", None))) or
+                                 any(e.event_type == "interrupt" for e in events_buf))
+        if not has_pending_interrupt:
+            # 流被真正中断（手动终止等）时保存骨架，使 execution_events 能被正确回显
+            await chat_service.save_message(session_id, "ai", "（任务已被手动终止）", config["configurable"]["chat_id"])
     await summarize_and_prune(
         snap.values if snap else {}, user_id, session_id, config)
     await execution_log_service.batch_save_events(

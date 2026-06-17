@@ -359,11 +359,20 @@ async def parse_events(stream):
             meta = {}
         tags = event.get("tags", [])
 
-        # 子图节点的 name 可能带命名空间前缀（如 "assistant_agent:assistant_planner"），
-        # langgraph_node 始终是原始短名，用于 NODE_LABELS 查表
-        _node = name if name in NODE_LABELS else meta.get("langgraph_node", "")
-        if _node and _node != name:
-            _log.debug(f"[parse_events] 事件={ev} name={name} → fallback langgraph_node={_node}")
+        # _node 只在 name 就是节点本身时才赋值：
+        #   1) name 直接在 NODE_LABELS（如 "query_geo"）
+        #   2) name 是带命名空间前缀的子图节点（如 "assistant_agent:assistant_planner"），
+        #      此时 meta.langgraph_node = "assistant_planner"，且 name.endswith(":assistant_planner")
+        # 以上两种情况以外（如工具 on_chain_start/end：name="amap_geocode", langgraph_node="query_geo"），
+        # _node 留空，避免把工具的链式事件误判为节点事件。
+        _ln = meta.get("langgraph_node", "")
+        if name in NODE_LABELS:
+            _node = name
+        elif _ln in NODE_LABELS and (name == _ln or name.endswith(f":{_ln}")):
+            _node = _ln
+            _log.debug(f"[parse_events] 事件={ev} name={name} → namespaced fallback _node={_node}")
+        else:
+            _node = ""
 
         # ReAct 循环节点：每轮独立命名（仅在 start 时递增，end 只读取）
         if _node in _REACT_NODES:
@@ -381,16 +390,11 @@ async def parse_events(stream):
                 yield ae
 
         # --- on_chain_end: 节点完成 ---
-        elif ev == "on_chain_end" and (name in NODE_LABELS or meta.get("langgraph_node", "") in NODE_LABELS):
-            # 子图节点的 name 可能是 namespaced（如 "assistant_agent:assistant_planner"），
-            # langgraph_node 始终是原始短名，兜底使用
-            _chain_name = name if name in NODE_LABELS else meta.get("langgraph_node", name)
-            if _chain_name != name:
-                _log.info(f"[parse_events] on_chain_end name={name} → fallback langgraph_node={_chain_name}")
+        elif ev == "on_chain_end" and _node:
             output = data.get("output", {}) or {}
             if not isinstance(output, dict):
                 output = {}
-            for ae in _handle_chain_end(_chain_name, meta, output, display_name, state):
+            for ae in _handle_chain_end(_node, meta, output, display_name, state):
                 yield ae
 
         # --- on_chat_model_start: LLM 开始计时 ---
