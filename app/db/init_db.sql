@@ -173,6 +173,8 @@ CREATE TABLE IF NOT EXISTS root.agent_skill_rel (
     id               BIGSERIAL PRIMARY KEY,
     agent_code       VARCHAR(64)  NOT NULL,
     skill_key        VARCHAR(128) NOT NULL,
+    skill_desc       TEXT         NULL,
     UNIQUE (agent_code, skill_key)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_skill_agent ON root.agent_skill_rel(agent_code);
+ALTER TABLE root.agent_skill_rel ADD COLUMN IF NOT EXISTS skill_desc TEXT NULL;

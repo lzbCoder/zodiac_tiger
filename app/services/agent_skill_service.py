@@ -4,6 +4,7 @@ from sqlalchemy import select, delete
 
 from app.db.session import get_db_session
 from app.models.agent_skill_rel import AgentSkillRel
+from app.models.skill_info import SkillInfo
 
 
 async def get_skill_keys_for_agent(agent_code: str) -> list[str]:
@@ -24,9 +25,15 @@ async def get_bound_agents(skill_key: str) -> list[str]:
 
 async def update_bindings(skill_key: str, agent_codes: list[str]) -> None:
     async with get_db_session() as session:
+        # 获取技能描述，绑定时一并存入
+        skill_row = (await session.execute(
+            select(SkillInfo.skill_desc).where(SkillInfo.skill_key == skill_key)
+        )).scalar_one_or_none()
+        skill_desc = skill_row if skill_row else None
+
         await session.execute(
             delete(AgentSkillRel).where(AgentSkillRel.skill_key == skill_key)
         )
         for code in agent_codes:
-            session.add(AgentSkillRel(agent_code=code, skill_key=skill_key))
+            session.add(AgentSkillRel(agent_code=code, skill_key=skill_key, skill_desc=skill_desc))
         await session.commit()
