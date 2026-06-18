@@ -3,8 +3,8 @@ from pydantic import BaseModel
 
 class SkillEdit(BaseModel):
     skill_key: str
-    skill_name: str
-    skill_desc: str | None = None
+    display_name: str
+    display_desc: str | None = None
 
 
 class SkillStatus(BaseModel):

@@ -10,13 +10,13 @@ router = APIRouter(tags=["技能管理"])
 
 @router.post("/skill/upload")
 async def skill_upload(
-    skill_name: str = Form(...),
-    skill_desc: str | None = Form(None),
+    display_name: str = Form(...),
+    display_desc: str | None = Form(None),
     file: UploadFile = File(...),
 ):
     try:
         file_bytes = await file.read()
-        result = await skill_info_service.upload_skill(file_bytes, file.filename or "", skill_name, skill_desc)
+        result = await skill_info_service.upload_skill(file_bytes, file.filename or "", display_name, display_desc)
         return success(result, "技能上传成功")
     except ValueError as e:
         return fail(message=str(e))
@@ -38,7 +38,7 @@ async def skill_list():
 @router.put("/skill/edit")
 async def skill_edit(req: SkillEdit):
     try:
-        await skill_info_service.edit_skill(req.skill_key, req.skill_name, req.skill_desc)
+        await skill_info_service.edit_skill(req.skill_key, req.display_name, req.display_desc)
         return success(message="保存成功")
     except Exception as e:
         logger.error(f"编辑技能失败: {e}")

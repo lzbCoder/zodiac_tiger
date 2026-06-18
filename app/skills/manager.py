@@ -49,7 +49,7 @@ class GlobalSkillManager:
 
         async with get_db_session() as session:
             rows = (await session.execute(
-                select(SkillInfo.skill_key, SkillInfo.skill_name, SkillInfo.folder_abs_path)
+                select(SkillInfo.skill_key, SkillInfo.display_name, SkillInfo.folder_abs_path)
                 .join(AgentSkillRel, AgentSkillRel.skill_key == SkillInfo.skill_key)
                 .where(
                     AgentSkillRel.agent_code == agent_code,
@@ -71,7 +71,7 @@ class GlobalSkillManager:
             cached = cls._meta_cache.get(r.skill_key, {})
             result.append({
                 "skill_key": r.skill_key,
-                "skill_name": r.skill_name,
+                "display_name": r.display_name,
                 "system_prompt": cached.get("system_prompt"),
                 "bind_tools": cached.get("bind_tools"),
             })

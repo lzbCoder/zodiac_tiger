@@ -18,7 +18,7 @@ class SkillRegistry:
             rows = (await session.execute(
                 select(
                     SkillInfo.skill_key,
-                    SkillInfo.skill_name,
+                    SkillInfo.display_name,
                     SkillInfo.skill_desc,
                     SkillInfo.enable_status,
                 )
@@ -29,7 +29,7 @@ class SkillRegistry:
         skills = [
             {
                 "skill_key": r.skill_key,
-                "skill_name": r.skill_name,
+                "display_name": r.display_name,
                 "skill_desc": r.skill_desc,
                 "enable_status": r.enable_status,
             }

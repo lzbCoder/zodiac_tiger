@@ -66,7 +66,7 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
         skill_list = []
     skill_context = ""
     if skill_list:
-        parts = [f"【{s['skill_name']}】\n{s['system_prompt']}"
+        parts = [f"【{s['display_name']}】\n{s['system_prompt']}"
                  for s in skill_list if s.get("system_prompt")]
         if parts:
             skill_context = "\n\n已加载本地技能（请参考其指令执行）：\n" + "\n\n".join(parts)

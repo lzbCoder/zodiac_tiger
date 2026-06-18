@@ -145,10 +145,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_mcp_agent ON root.agent_mcp_rel(agent_code)
 CREATE TABLE IF NOT EXISTS root.skill_info (
     id               BIGSERIAL PRIMARY KEY,
     skill_key        VARCHAR(128) NOT NULL UNIQUE,
-    origin_name      VARCHAR(256) NOT NULL,
-    skill_name       VARCHAR(256) NOT NULL,
-    origin_desc      TEXT         NOT NULL,
-    skill_desc       TEXT         NULL,
+    skill_desc       TEXT         NOT NULL,
+    display_name     VARCHAR(256) NOT NULL,
+    display_desc     TEXT         NULL,
     folder_abs_path  VARCHAR(512) NOT NULL,
     enable_status    SMALLINT     NOT NULL DEFAULT 1,
     sort             INT          NOT NULL DEFAULT 0,

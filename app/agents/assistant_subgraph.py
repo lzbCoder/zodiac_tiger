@@ -104,7 +104,7 @@ async def _build_skill_context() -> str:
         skill_list = []
     if not skill_list:
         return ""
-    parts = [f"【{s['skill_name']}】\n{s['system_prompt']}"
+    parts = [f"【{s['display_name']}】\n{s['system_prompt']}"
              for s in skill_list if s.get("system_prompt")]
     if not parts:
         return ""

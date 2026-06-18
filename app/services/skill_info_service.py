@@ -57,8 +57,7 @@ async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_
         if not skill_key:
             raise ValueError("SKILL.md frontmatter 中未找到 name 字段")
 
-        origin_name = skill_key
-        origin_desc = meta.get("description", "").strip()
+        md_desc = meta.get("description", "").strip()
 
         # 唯一性检验
         async with get_db_session() as session:
@@ -84,10 +83,9 @@ async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_
         async with get_db_session() as session:
             session.add(SkillInfo(
                 skill_key=skill_key,
-                origin_name=origin_name,
-                skill_name=skill_name.strip() if skill_name else origin_name,
-                origin_desc=origin_desc,
-                skill_desc=skill_desc,
+                display_name=skill_name.strip() if skill_name else skill_key,
+                skill_desc=md_desc,
+                display_desc=skill_desc,
                 folder_abs_path=folder_abs_path,
             ))
             session.add(SkillMdMeta(skill_key=skill_key))
@@ -96,9 +94,8 @@ async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_
         logger.info(f"[Skill] 上传成功: {skill_key} → {folder_abs_path}")
         return {
             "skill_key": skill_key,
-            "skill_name": skill_name or origin_name,
-            "origin_name": origin_name,
-            "origin_desc": origin_desc,
+            "display_name": skill_name.strip() if skill_name else skill_key,
+            "skill_desc": md_desc,
             "folder_abs_path": folder_abs_path,
         }
 
@@ -111,14 +108,14 @@ async def list_skills() -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
-async def edit_skill(skill_key: str, skill_name: str, skill_desc: str | None) -> None:
+async def edit_skill(skill_key: str, display_name: str, display_desc: str | None) -> None:
     async with get_db_session() as session:
         await session.execute(
             update(SkillInfo)
             .where(SkillInfo.skill_key == skill_key)
             .values(
-                skill_name=skill_name.strip(),
-                skill_desc=skill_desc,
+                display_name=display_name.strip(),
+                display_desc=display_desc,
                 update_time=datetime.now(),
             )
         )
@@ -168,10 +165,9 @@ async def delete_skill(skill_key: str) -> None:
 def _row_to_dict(r: SkillInfo) -> dict:
     return {
         "skill_key": r.skill_key,
-        "origin_name": r.origin_name,
-        "skill_name": r.skill_name,
-        "origin_desc": r.origin_desc,
+        "display_name": r.display_name,
         "skill_desc": r.skill_desc,
+        "display_desc": r.display_desc,
         "folder_abs_path": r.folder_abs_path,
         "enable_status": r.enable_status,
         "sort": r.sort,
