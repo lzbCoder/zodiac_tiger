@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS root.mcp_server_config (
     display_name    VARCHAR(256) NOT NULL,
     endpoint_url    VARCHAR(512) NOT NULL,
     auth_headers    JSONB        NOT NULL DEFAULT '{}',
+    transport_type  VARCHAR(32)  NOT NULL DEFAULT 'streamable_http',
     enable_status   SMALLINT     NOT NULL DEFAULT 1,
     connect_status  SMALLINT     NOT NULL DEFAULT 0,
     last_check_time TIMESTAMP    NULL,
@@ -113,6 +114,9 @@ CREATE TABLE IF NOT EXISTS root.mcp_server_config (
     create_time     TIMESTAMP    NOT NULL DEFAULT NOW(),
     update_time     TIMESTAMP    NULL
 );
+-- 存量库升级：幂等添加协议类型列（IF NOT EXISTS 需 PostgreSQL 9.6+）
+ALTER TABLE root.mcp_server_config
+    ADD COLUMN IF NOT EXISTS transport_type VARCHAR(32) NOT NULL DEFAULT 'streamable_http';
 
 -- MCP 工具清单 & 白名单表
 CREATE TABLE IF NOT EXISTS root.mcp_tool_info (

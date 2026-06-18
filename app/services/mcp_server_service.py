@@ -27,6 +27,7 @@ async def save_server(data: dict) -> dict:
             select(McpServerConfig).where(McpServerConfig.mcp_key == mcp_key)
         )).scalar_one_or_none()
 
+        transport_type = data.get("transport_type", "streamable_http")
         if existing:
             await session.execute(
                 update(McpServerConfig)
@@ -35,6 +36,7 @@ async def save_server(data: dict) -> dict:
                     display_name=data["display_name"],
                     endpoint_url=data["endpoint_url"],
                     auth_headers=data.get("auth_headers", {}),
+                    transport_type=transport_type,
                     remark=data.get("remark"),
                     update_time=datetime.now(),
                 )
@@ -45,11 +47,12 @@ async def save_server(data: dict) -> dict:
                 display_name=data["display_name"],
                 endpoint_url=data["endpoint_url"],
                 auth_headers=data.get("auth_headers", {}),
+                transport_type=transport_type,
                 remark=data.get("remark"),
             ))
         await session.commit()
 
-    await GlobalMcpManager.reload(mcp_key, data["endpoint_url"], data.get("auth_headers", {}))
+    await GlobalMcpManager.reload(mcp_key, data["endpoint_url"], data.get("auth_headers", {}), transport_type)
     return {"mcp_key": mcp_key}
 
 
@@ -88,15 +91,38 @@ async def toggle_enable_status(mcp_key: str, enable_status: int):
                 select(McpServerConfig).where(McpServerConfig.mcp_key == mcp_key)
             )).scalar_one_or_none()
         if row:
-            await GlobalMcpManager.reload(mcp_key, row.endpoint_url, row.auth_headers or {})
+            await GlobalMcpManager.reload(
+                mcp_key, row.endpoint_url, row.auth_headers or {},
+                row.transport_type or "streamable_http",
+            )
 
 
-async def test_connect(endpoint_url: str, auth_headers: dict) -> dict:
-    """仅测试连通性，不入库，返回 {ok, message, tool_count}。"""
-    from app.mcp.mcp_sdk_client import McpStreamHttpClient
-    client = McpStreamHttpClient("_test", endpoint_url, auth_headers)
-    ok, msg, tools = await client.test_and_list_tools()
-    return {"ok": ok, "message": msg, "tool_count": len(tools)}
+async def test_connect(
+    endpoint_url: str,
+    auth_headers: dict,
+    transport_type: str = "streamable_http",
+    mcp_key: str = "",
+) -> dict:
+    """
+    仅测试连通性，不入库，返回 {ok, message, tool_count}。
+    SSE：若传入已知 mcp_key 且缓存中有预热连接，直接复用（无冷启动）。
+    否则使用临时连接（触发冷启动）。
+    """
+    from app.mcp.mcp_sdk_client import create_mcp_client, _sse_client_cache
+
+    if transport_type == "sse" and mcp_key and mcp_key in _sse_client_cache:
+        # 复用预热好的持久连接，无需冷启动
+        client = _sse_client_cache[mcp_key]
+        ok, msg, tools = await client.test_and_list_tools()
+        return {"ok": ok, "message": msg, "tool_count": len(tools)}
+
+    # 新服务或无缓存：用临时连接，用完关闭
+    client = create_mcp_client("_test", endpoint_url, auth_headers, transport_type)
+    try:
+        ok, msg, tools = await client.test_and_list_tools()
+        return {"ok": ok, "message": msg, "tool_count": len(tools)}
+    finally:
+        client.close()
 
 
 async def sync_tools(mcp_key: str) -> int:
@@ -104,7 +130,7 @@ async def sync_tools(mcp_key: str) -> int:
     拉取远端工具列表，全量写入 mcp_tool_info（保留已有 is_allow 值），
     同时更新 connect_status 和 last_check_time，返回同步工具数量。
     """
-    from app.mcp.mcp_sdk_client import McpStreamHttpClient
+    from app.mcp.mcp_sdk_client import create_mcp_client
 
     async with get_db_session() as session:
         row = (await session.execute(
@@ -114,7 +140,10 @@ async def sync_tools(mcp_key: str) -> int:
     if not row:
         raise ValueError(f"MCP 服务不存在: {mcp_key}")
 
-    client = McpStreamHttpClient(mcp_key, row.endpoint_url, row.auth_headers or {})
+    client = create_mcp_client(
+        mcp_key, row.endpoint_url, row.auth_headers or {},
+        row.transport_type or "streamable_http",
+    )
     ok, msg, tools = await client.test_and_list_tools()
 
     connect_status = 1 if ok else 2
@@ -157,6 +186,7 @@ def _row_to_dict(r: McpServerConfig) -> dict:
         "display_name": r.display_name,
         "endpoint_url": r.endpoint_url,
         "auth_headers": r.auth_headers,
+        "transport_type": r.transport_type or "streamable_http",
         "enable_status": r.enable_status,
         "connect_status": r.connect_status,
         "last_check_time": r.last_check_time.strftime("%Y-%m-%d %H:%M:%S") if r.last_check_time else None,

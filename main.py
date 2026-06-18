@@ -82,6 +82,8 @@ async def lifespan(app: FastAPI):
     try:
         from app.mcp.mcp_manager import GlobalMcpManager
         await GlobalMcpManager.init()
+        # SSE 服务预热：后台建连，避免首次工具调用触发冷启动
+        asyncio.create_task(GlobalMcpManager.warmup_sse())
     except Exception as e:
         logger.error(f"MCP Manager 初始化失败: {e}")
 

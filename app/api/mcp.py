@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter
 from loguru import logger
 
@@ -24,7 +25,15 @@ async def server_save(req: McpServerSave):
     """新增/编辑 MCP 服务，保存后自动同步工具。"""
     try:
         result = await mcp_server_service.save_server(req.model_dump())
-        # 自动同步工具
+        if req.transport_type == "sse":
+            # SSE 冷启动需 3-5 分钟，后台异步同步工具，避免阻塞保存响应
+            task = asyncio.create_task(mcp_server_service.sync_tools(req.mcp_key))
+            task.add_done_callback(
+                lambda t: logger.error(f"SSE 工具后台同步失败 [{req.mcp_key}]: {t.exception()}")
+                if not t.cancelled() and t.exception() else None
+            )
+            return success({**result, "tool_count": 0},
+                           "保存成功（SSE 工具同步在后台进行，约 3-5 分钟后刷新工具列表）")
         tool_count = await mcp_server_service.sync_tools(req.mcp_key)
         return success({**result, "tool_count": tool_count}, "保存成功")
     except Exception as e:
@@ -56,7 +65,7 @@ async def server_status(req: McpServerStatus):
 async def server_test_connect(req: McpTestConnect):
     """测试连通性，不入库。"""
     try:
-        result = await mcp_server_service.test_connect(req.endpoint_url, req.auth_headers)
+        result = await mcp_server_service.test_connect(req.endpoint_url, req.auth_headers, req.transport_type, req.mcp_key)
         return success(result)
     except Exception as e:
         logger.error(f"测试 MCP 连接失败: {e}")

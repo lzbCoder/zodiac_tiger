@@ -13,6 +13,7 @@ class McpServerConfig(Base):
     display_name: Mapped[str] = mapped_column(String(256))
     endpoint_url: Mapped[str] = mapped_column(String(512))
     auth_headers: Mapped[dict] = mapped_column(JSONB, default=dict)
+    transport_type: Mapped[str] = mapped_column(String(32), default="streamable_http")
     enable_status: Mapped[int] = mapped_column(SmallInteger, default=1)
     connect_status: Mapped[int] = mapped_column(SmallInteger, default=0)
     last_check_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

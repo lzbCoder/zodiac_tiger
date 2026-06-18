@@ -34,7 +34,11 @@ class GlobalMcpManager:
         if rows:
             mapping = {
                 r.mcp_key: json.dumps(
-                    {"endpoint_url": r.endpoint_url, "auth_headers": r.auth_headers or {}},
+                    {
+                        "endpoint_url": r.endpoint_url,
+                        "auth_headers": r.auth_headers or {},
+                        "transport_type": r.transport_type or "streamable_http",
+                    },
                     ensure_ascii=False,
                 )
                 for r in rows
@@ -44,29 +48,91 @@ class GlobalMcpManager:
         logger.info(f"MCP Manager 初始化完成，加载 {len(rows)} 个服务")
 
     @classmethod
-    async def reload(cls, mcp_key: str, endpoint_url: str, auth_headers: dict):
-        """新增/编辑/启用后刷新单条 Redis 缓存。"""
+    async def warmup_sse(cls):
+        """
+        后台预热所有 SSE 类型的 MCP 服务连接。
+        在 lifespan 启动后以 asyncio.create_task 调用，不阻塞启动流程。
+        SSE 冷启动（百炼等 serverless 实现需要 3-5 分钟）在后台静默完成，
+        之后工具调用直接复用已建立的连接，无需等待。
+        """
         from app.db.redis import get_redis
+        from app.mcp.mcp_sdk_client import create_mcp_client
 
+        try:
+            redis = await get_redis()
+            all_keys = await redis.hkeys(_REDIS_KEY)
+            if not all_keys:
+                return
+
+            import json as _json
+            sse_keys = []
+            for key in all_keys:
+                raw = await redis.hget(_REDIS_KEY, key)
+                if raw:
+                    cfg = _json.loads(raw)
+                    if cfg.get("transport_type") == "sse":
+                        sse_keys.append((key, cfg))
+
+            if not sse_keys:
+                return
+
+            from loguru import logger as _logger
+            _logger.info(f"SSE 预热：开始后台建连 {[k for k, _ in sse_keys]}")
+
+            async def _warmup_one(mcp_key: str, cfg: dict):
+                try:
+                    client = create_mcp_client(
+                        mcp_key=mcp_key,
+                        endpoint=cfg["endpoint_url"],
+                        headers=cfg.get("auth_headers", {}),
+                        transport_type="sse",
+                    )
+                    # 触发建连并等待就绪（冷启动在此发生）
+                    ok, msg, tools = await client.test_and_list_tools()
+                    if ok:
+                        _logger.info(f"SSE 预热完成 [{mcp_key}]：{len(tools)} 个工具，连接已就绪")
+                    else:
+                        _logger.warning(f"SSE 预热失败 [{mcp_key}]：{msg}")
+                except Exception as e:
+                    _logger.error(f"SSE 预热异常 [{mcp_key}]：{e}")
+
+            import asyncio as _asyncio
+            await _asyncio.gather(*[_warmup_one(k, cfg) for k, cfg in sse_keys])
+        except Exception as e:
+            from loguru import logger as _logger
+            _logger.error(f"SSE 预热任务异常: {e}")
+
+    @classmethod
+    async def reload(cls, mcp_key: str, endpoint_url: str, auth_headers: dict, transport_type: str = "streamable_http"):
+        """新增/编辑/启用后刷新单条 Redis 缓存，同时关闭旧 SSE 持久连接（配置已变，旧连接失效）。"""
+        from app.db.redis import get_redis
+        from app.mcp.mcp_sdk_client import invalidate_sse_client
+
+        invalidate_sse_client(mcp_key)  # 关闭旧 SSE 连接，下次调用以新配置重建
         redis = await get_redis()
         await redis.hset(
             _REDIS_KEY,
             mcp_key,
-            json.dumps({"endpoint_url": endpoint_url, "auth_headers": auth_headers}, ensure_ascii=False),
+            json.dumps(
+                {"endpoint_url": endpoint_url, "auth_headers": auth_headers, "transport_type": transport_type},
+                ensure_ascii=False,
+            ),
         )
 
     @classmethod
     async def remove(cls, mcp_key: str):
-        """删除/禁用后移除 Redis 缓存条目。"""
+        """删除/禁用后移除 Redis 缓存条目，同时关闭 SSE 持久连接。"""
         from app.db.redis import get_redis
+        from app.mcp.mcp_sdk_client import invalidate_sse_client
 
+        invalidate_sse_client(mcp_key)
         redis = await get_redis()
         await redis.hdel(_REDIS_KEY, mcp_key)
 
     @classmethod
     async def get_client(cls, mcp_key: str):
-        """按 mcp_key 从 Redis 读取配置，返回新 McpStreamHttpClient 实例。"""
-        from app.mcp.mcp_sdk_client import McpStreamHttpClient
+        """按 mcp_key 从 Redis 读取配置，根据 transport_type 返回对应协议客户端实例。"""
+        from app.mcp.mcp_sdk_client import create_mcp_client
         from app.db.redis import get_redis
 
         redis = await get_redis()
@@ -74,10 +140,11 @@ class GlobalMcpManager:
         if not raw:
             raise KeyError(f"MCP 配置不存在: {mcp_key}")
         cfg = json.loads(raw)
-        return McpStreamHttpClient(
+        return create_mcp_client(
             mcp_key=mcp_key,
             endpoint=cfg["endpoint_url"],
             headers=cfg["auth_headers"],
+            transport_type=cfg.get("transport_type", "streamable_http"),
         )
 
     @classmethod
