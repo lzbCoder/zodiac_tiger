@@ -102,8 +102,16 @@ class McpSseClient:
         if self._ready is None:
             self._ready = asyncio.Event()
 
+    # 心跳间隔（秒）：百炼 serverless 容器闲置约 5-10 分钟会被回收，每 2 分钟 ping 一次保活
+    _KEEPALIVE_INTERVAL = 120
+
     async def _run_connection(self):
-        """后台任务：建立并持续维持 SSE 长连接，直到被取消或连接意外断开。"""
+        """
+        后台任务：建立并持续维持 SSE 长连接。
+        每隔 _KEEPALIVE_INTERVAL 秒发送一次 MCP Ping，防止 serverless 容器因闲置被回收。
+        Ping 失败说明连接已断，任务退出，下次调用会触发重连。
+        """
+        from loguru import logger as _logger
         try:
             async with sse_client(
                 url=self.endpoint,
@@ -113,16 +121,23 @@ class McpSseClient:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     self._session = session
-                    self._ready.set()           # 通知所有等待方：连接就绪
-                    await asyncio.sleep(86400)  # 持续保持上下文存活（最长 24h）
+                    self._ready.set()
+                    _logger.debug(f"SSE [{self.mcp_key}] 连接就绪，启动心跳（每 {self._KEEPALIVE_INTERVAL}s）")
+                    while True:
+                        await asyncio.sleep(self._KEEPALIVE_INTERVAL)
+                        await session.send_ping()
+                        _logger.debug(f"SSE [{self.mcp_key}] 心跳 OK")
         except asyncio.CancelledError:
             pass
         except Exception as e:
+            _logger.warning(f"SSE [{self.mcp_key}] 连接断开: {e!r}")
             self._session_error = e
             if self._ready:
-                self._ready.set()   # 让等待方感知错误
+                self._ready.set()
         finally:
             self._session = None
+            if self._ready:
+                self._ready.clear()  # 连接已终止，下次 _get_session 需重新等待建连
 
     async def _get_session(self, connect_timeout: float = 360.0) -> ClientSession:
         """
@@ -186,14 +201,37 @@ class McpSseClient:
         except Exception as e:
             return False, str(e), []
 
+    async def _invalidate_session(self):
+        """强制废弃当前会话，让下次 _get_session 重新建连。"""
+        self._session = None
+        if self._ready:
+            self._ready.clear()
+        if self._bg_task and not self._bg_task.done():
+            self._bg_task.cancel()
+            # 等后台任务清理完毕（finally 块运行完）再重连，最多等 3 秒
+            try:
+                await asyncio.wait_for(asyncio.shield(self._bg_task), timeout=3.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                pass
+
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         """
         调用工具，复用已建立的持久 SSE 连接，无需冷启动。
-        若连接已断开，自动重连（会有一次冷启动延迟）。
+        若连接因服务端超时/容器回收而断开，自动重连后重试一次。
         """
-        session = await self._get_session(connect_timeout=360.0)
-        result = await session.call_tool(tool_name, arguments)
-        return str(result.content)
+        from anyio import ClosedResourceError as _ClosedResourceError
+        try:
+            session = await self._get_session(connect_timeout=360.0)
+            result = await session.call_tool(tool_name, arguments)
+            return str(result.content)
+        except _ClosedResourceError:
+            # SSE 底层流已关闭（百炼容器回收/会话超时）——废弃旧连接，重连后重试
+            from loguru import logger as _logger
+            _logger.warning(f"MCP [{self.mcp_key}] SSE 连接已断开，正在重连...")
+            await self._invalidate_session()
+            session = await self._get_session(connect_timeout=360.0)
+            result = await session.call_tool(tool_name, arguments)
+            return str(result.content)
 
 
 def invalidate_sse_client(mcp_key: str):
