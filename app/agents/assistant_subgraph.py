@@ -4,13 +4,24 @@ import json
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
+from sqlalchemy import select
 
+from app.config import settings
+from app.db.session import get_db_session
+from app.factory.llm_factory import create_llm
+from app.models.agent_skill_rel import AgentSkillRel
+from app.prompts.loader import render
+from app.skills.registry import SkillRegistry
 from app.state.assistant_state import AssistantState
 from app.tools.web_search import web_search as web_search_tool
 from app.agents.agent_utils import build_tool_desc_section
-from app.prompts.loader import render
 
 _MAX_LOOPS = 10
+
+
+def _compile_skills(xml_bodies: list[str]) -> str:
+    """将多个技能 XML 合并为统一内容（代码合并，不调用 LLM）。"""
+    return "\n\n".join(xml_bodies)
 
 
 def _build_tool_map(enable_search: bool) -> dict:
@@ -33,6 +44,8 @@ async def collect_task_node(state: AssistantState, config: RunnableConfig) -> di
         "tool_calls": [],
         "react_loop_count": 0,
         "is_finish": False,
+        "skill_context": "",
+        "activated_skill_keys": [],
     }
 
 
@@ -44,9 +57,6 @@ async def triage_node(state: AssistantState, config: RunnableConfig) -> dict:
     - 简单任务：complexity=simple，无计划，后续直接走 ReAct 循环。
     - 复杂任务：complexity=complex，生成显式步骤清单（plan_steps），分步执行并可视化。
     """
-    from app.factory.llm_factory import create_llm
-    from app.config import settings
-
     task = state.get("task", "")
     # 启发式：非常简短的问题（<20 字）直接视为简单任务，跳过 LLM 调用
     if len(task) < 20:
@@ -82,6 +92,74 @@ async def triage_node(state: AssistantState, config: RunnableConfig) -> dict:
     return {"complexity": "complex", "plan_steps": plan_steps}
 
 
+# ---- 节点 2.5：技能激活 ----
+
+async def activate_skill_node(state: AssistantState, config: RunnableConfig) -> dict:
+    """查询助手 Agent 绑定的技能目录，LLM 结合任务和 triage 结果筛选，从 Redis 获取激活内容。"""
+    async with get_db_session() as session:
+        rows = (await session.execute(
+            select(AgentSkillRel.skill_key, AgentSkillRel.skill_desc)
+            .where(AgentSkillRel.agent_code == "assistant_agent")
+        )).all()
+
+    if not rows:
+        return {"skill_context": "", "activated_skill_keys": [], "_activated_skill_infos": []}
+
+    catalog = [{"skill_key": r.skill_key, "skill_desc": r.skill_desc or ""} for r in rows]
+    catalog_text = "\n".join(f"- {c['skill_key']}：{c['skill_desc']}" for c in catalog)
+
+    complexity = state.get("complexity", "simple")
+    plan_steps = state.get("plan_steps") or []
+    triage_summary = f"任务复杂度：{complexity}"
+    if plan_steps:
+        steps_str = "；".join(s.get("description", "") for s in plan_steps[:3])
+        triage_summary += f"，执行计划摘要：{steps_str}"
+
+    prompt = render(
+        "skill_activate",
+        task=state.get("task", ""),
+        catalog_text=catalog_text,
+        triage_summary=triage_summary,
+    )
+    llm = create_llm(settings.INTENT_MODEL, streaming=False, tags=["skip_stream"])
+    resp = await llm.ainvoke(prompt)
+    try:
+        text = resp.content.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        selected_keys = json.loads(text).get("skill_keys", [])
+    except (json.JSONDecodeError, AttributeError):
+        selected_keys = []
+
+    activated_keys: list[str] = []
+    xml_parts: list[str] = []
+    skill_infos: list[dict] = []
+
+    for key in selected_keys:
+        data = await SkillRegistry.get_skill(key)
+        if not data:
+            continue
+        activated_keys.append(key)
+        xml_parts.append(data.get("skill_xml_body", ""))
+        skill_infos.append({
+            "display_name": key,
+            "skill_desc": data.get("skill_desc", ""),
+        })
+
+    if len(xml_parts) == 1:
+        skill_context = xml_parts[0]
+    elif len(xml_parts) > 1:
+        skill_context = _compile_skills(xml_parts)
+    else:
+        skill_context = ""
+
+    return {
+        "skill_context": skill_context,
+        "activated_skill_keys": activated_keys,
+        "_activated_skill_infos": skill_infos,
+    }
+
+
 # ---- Planner 私有辅助函数 ----
 
 async def _collect_agent_tools(enable_search: bool) -> dict:
@@ -93,22 +171,6 @@ async def _collect_agent_tools(enable_search: bool) -> dict:
     except Exception:
         mcp_tools = {}
     return {**static_tools, **mcp_tools}
-
-
-async def _build_skill_context() -> str:
-    """获取 assistant_agent 绑定的技能提示词并拼接为上下文段落。"""
-    from app.skills.manager import GlobalSkillManager
-    try:
-        skill_list = await GlobalSkillManager.get_skills_for_agent("assistant_agent")
-    except Exception:
-        skill_list = []
-    if not skill_list:
-        return ""
-    parts = [f"【{s['display_name']}】\n{s['system_prompt']}"
-             for s in skill_list if s.get("system_prompt")]
-    if not parts:
-        return ""
-    return "\n\n已加载本地技能（请参考其指令执行）：\n" + "\n\n".join(parts)
 
 
 def _build_obs_text(observations: list) -> str:
@@ -189,15 +251,12 @@ def _apply_plan_step_update(
 # ---- 节点 3：Planner（思考决策） ----
 
 async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
-    from app.factory.llm_factory import create_llm
-    from app.config import settings
-
     enable_search = config["configurable"].get("enable_search", False)
     loop = state.get("react_loop_count", 0)
 
     # 构建工具集、技能上下文、观察摘要
     all_tools = await _collect_agent_tools(enable_search)
-    skill_context = await _build_skill_context()
+    skill_context = state.get("skill_context", "")
     obs_text = _build_obs_text(state.get("observations", []))
 
     # 深拷贝计划步骤（避免直接修改 state 内字典），生成计划相关 prompt 段落
@@ -308,9 +367,6 @@ async def observation_node(state: AssistantState, config: RunnableConfig) -> dic
 # ---- 节点 6：回答生成 ----
 
 async def answer_generator_node(state: AssistantState, config: RunnableConfig) -> dict:
-    from app.factory.llm_factory import create_llm
-    from app.config import settings
-
     raw_obs = state.get("observations", [])
     obs_sections = []
     for o in raw_obs:
@@ -350,14 +406,16 @@ def build_assistant_agent() -> StateGraph:
 
     sub.add_node("assistant_collect_task",     collect_task_node)
     sub.add_node("assistant_triage",           triage_node)
+    sub.add_node("assistant_activate_skill",   activate_skill_node)
     sub.add_node("assistant_planner",          planner_node)
     sub.add_node("assistant_tool_executor",    tool_executor_node)
     sub.add_node("assistant_observation",      observation_node)
     sub.add_node("assistant_answer_generator", answer_generator_node)
 
     sub.set_entry_point("assistant_collect_task")
-    sub.add_edge("assistant_collect_task", "assistant_triage")
-    sub.add_edge("assistant_triage",       "assistant_planner")
+    sub.add_edge("assistant_collect_task",   "assistant_triage")
+    sub.add_edge("assistant_triage",         "assistant_activate_skill")
+    sub.add_edge("assistant_activate_skill", "assistant_planner")
 
     sub.add_conditional_edges("assistant_planner", route_after_planner, {
         "assistant_tool_executor":    "assistant_tool_executor",

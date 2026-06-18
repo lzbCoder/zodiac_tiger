@@ -38,3 +38,12 @@ class ReportState(AgentState):
     final_report: NotRequired[str]
     """生成的最终数据分析报告内容。"""
 
+    skill_context: NotRequired[str]
+    """已激活技能的 XML 上下文，由 activate_skill_node 写入，planner 读取；多技能时在节点内合并。"""
+
+    activated_skill_keys: NotRequired[list[str]]
+    """已激活的技能 key 列表。"""
+
+    _activated_skill_infos: NotRequired[list[dict]]
+    """激活技能的展示信息（display_name + skill_desc），仅用于 SSE 事件 detail，不影响业务路由。"""
+

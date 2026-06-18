@@ -32,6 +32,7 @@ NODE_LABELS: dict[str, str] = {
     "generate_plan":              "行程生成",
     # 数据分析子图-内部节点
     "collect_task":               "任务收集",
+    "activate_skill":             "技能激活",
     "planner":                    "分析思考",
     "tool_executor":              "工具执行",
     "observation":                "数据观察",
@@ -39,6 +40,7 @@ NODE_LABELS: dict[str, str] = {
     # 综合助手子图-内部节点
     "assistant_collect_task":     "任务收集",
     "assistant_triage":           "任务分析",
+    "assistant_activate_skill":   "技能激活",
     "assistant_planner":          "分析思考",
     "assistant_tool_executor":    "工具执行",
     "assistant_observation":      "数据观察",
@@ -56,6 +58,7 @@ SUB_NODE_PARENT: dict[str, str] = {
     "generate_plan":              "旅游规划",
     # 数据分析子图：子级 --> 父级
     "collect_task":               "报表生成",
+    "activate_skill":             "报表生成",
     "planner":                    "报表生成",
     "tool_executor":              "报表生成",
     "observation":                "报表生成",
@@ -63,6 +66,7 @@ SUB_NODE_PARENT: dict[str, str] = {
     # 综合助手子图：子级 --> 父级
     "assistant_collect_task":     "智能助手",
     "assistant_triage":           "智能助手",
+    "assistant_activate_skill":   "智能助手",
     "assistant_planner":          "智能助手",
     "assistant_tool_executor":    "智能助手",
     "assistant_observation":      "智能助手",
@@ -192,7 +196,14 @@ def _build_chain_end_meta(name: str, output: dict, state: _ParseState) -> tuple[
         meta_dict["parent_node"] = parent
 
     # 各节点特有的 detail / react_round 字段
-    if name == "memory_recall":
+    if name in ("activate_skill", "assistant_activate_skill"):
+        skill_infos = output.get("_activated_skill_infos", [])
+        if skill_infos:
+            lines = "\n".join(f"- {s.get('display_name', '')}：{s.get('skill_desc', '')}" for s in skill_infos)
+            meta_dict["detail"] = f"已激活 {len(skill_infos)} 条技能：\n{lines}"
+        else:
+            meta_dict["detail"] = "未匹配到适合当前任务的技能"
+    elif name == "memory_recall":
         recalled = output.get("recalled_memories", "")
         if recalled:
             meta_dict["detail"] = recalled[:600]

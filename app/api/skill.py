@@ -75,6 +75,18 @@ async def skill_agent_bind_get(skill_key: str):
         return fail(message=str(e))
 
 
+@router.get("/skill/detail")
+async def skill_detail(skill_key: str):
+    try:
+        data = await skill_info_service.get_skill_detail(skill_key)
+        if data is None:
+            return fail(message="技能不存在")
+        return success(data)
+    except Exception as e:
+        logger.error(f"获取技能详情失败: {e}")
+        return fail(message=str(e))
+
+
 @router.put("/skill/agent-bind")
 async def skill_agent_bind_put(req: AgentSkillBind):
     try:

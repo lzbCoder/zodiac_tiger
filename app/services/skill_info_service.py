@@ -15,18 +15,20 @@ from app.db.session import get_db_session
 from app.models.skill_info import SkillInfo
 from app.models.skill_md_meta import SkillMdMeta
 from app.models.agent_skill_rel import AgentSkillRel
+from app.skills.registry import SkillRegistry, build_skill_xml
 
 
 async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_desc: str | None) -> dict:
     """
-    上传并解压技能压缩包（.zip
+    上传并解压技能压缩包（.zip）：
     1. 后缀校验
     2. 解压 → 找 SKILL.md → 解析 frontmatter 取 skill_key
     3. 唯一性检验
     4. 落地到 {SKILLS_ROOT}/{skill_key}/
-    5. 写 skill_info + skill_md_meta 占位
+    5. 写 skill_info + 完整 skill_md_meta + Redis per-skill key
     """
     from agentskills_core import split_frontmatter
+    from app.skills.file_system_provider import FileSystemSkillProvider
 
     suffix = Path(filename).suffix.lower()
     if suffix != ".zip":
@@ -42,7 +44,6 @@ async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_
         with zipfile.ZipFile(tmp_file) as zf:
             zf.extractall(extract_dir)
 
-        # 找 SKILL.md（取路径最浅的那个）
         skill_mds = list(extract_dir.rglob("SKILL.md"))
         if not skill_mds:
             raise ValueError("压缩包中未找到 SKILL.md 文件，请检查格式是否正确")
@@ -51,15 +52,14 @@ async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_
         skill_folder = skill_md_path.parent
 
         raw = skill_md_path.read_text(encoding="utf-8")
-        meta, _ = split_frontmatter(raw)
+        frontmatter, body = split_frontmatter(raw)
 
-        skill_key = meta.get("name", "").strip()
+        skill_key = frontmatter.get("name", "").strip()
         if not skill_key:
             raise ValueError("SKILL.md frontmatter 中未找到 name 字段")
 
-        md_desc = meta.get("description", "").strip()
+        md_desc = frontmatter.get("description", "").strip()
 
-        # 唯一性检验
         async with get_db_session() as session:
             existing = (await session.execute(
                 select(SkillInfo).where(SkillInfo.skill_key == skill_key)
@@ -68,7 +68,6 @@ async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_
         if existing:
             raise ValueError(f"技能 [{skill_key}] 已存在，请先删除后再上传")
 
-        # 落地到 SKILLS_ROOT
         skills_root = Path(settings.SKILLS_ROOT)
         skills_root.mkdir(parents=True, exist_ok=True)
         target_dir = skills_root / skill_key
@@ -79,7 +78,17 @@ async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_
 
         folder_abs_path = str(target_dir.resolve())
 
-        # 写 DB
+        # 完整写入 skill_md_meta（使用 FileSystemSkillProvider，保证从落地后的磁盘读取）
+        provider = FileSystemSkillProvider(settings.SKILLS_ROOT)
+        disk_frontmatter = await provider.get_frontmatter(skill_key)
+        disk_body = await provider.get_body(skill_key)
+
+        allowed_tools = disk_frontmatter.get("allowed-tools", [])
+        bind_tools = json.dumps(allowed_tools, ensure_ascii=False) if allowed_tools else None
+        system_prompt = disk_body.strip() or None
+
+        skill_xml_body = build_skill_xml(skill_key, disk_body, folder_abs_path)
+
         async with get_db_session() as session:
             session.add(SkillInfo(
                 skill_key=skill_key,
@@ -88,8 +97,21 @@ async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_
                 display_desc=skill_desc,
                 folder_abs_path=folder_abs_path,
             ))
-            session.add(SkillMdMeta(skill_key=skill_key))
+            session.add(SkillMdMeta(
+                skill_key=skill_key,
+                full_md_content=raw,
+                system_prompt=system_prompt,
+                bind_tools=bind_tools,
+                update_time=datetime.now(),
+            ))
             await session.commit()
+
+        await SkillRegistry.write_skill(skill_key, {
+            "skill_key": skill_key,
+            "skill_desc": md_desc,
+            "skill_body": disk_body,
+            "skill_xml_body": skill_xml_body,
+        })
 
         logger.info(f"[Skill] 上传成功: {skill_key} → {folder_abs_path}")
         return {
@@ -123,8 +145,6 @@ async def edit_skill(skill_key: str, display_name: str, display_desc: str | None
 
 
 async def toggle_enable(skill_key: str, enable_status: int) -> None:
-    from app.skills.manager import GlobalSkillManager
-
     async with get_db_session() as session:
         await session.execute(
             update(SkillInfo)
@@ -134,13 +154,31 @@ async def toggle_enable(skill_key: str, enable_status: int) -> None:
         await session.commit()
 
     if enable_status == 0:
-        GlobalSkillManager.invalidate(skill_key)
+        await SkillRegistry.delete_skill(skill_key)
+    else:
+        # 重新启用：从 DB 读取完整数据，写入 Redis
+        async with get_db_session() as session:
+            row = (await session.execute(
+                select(SkillInfo.skill_desc, SkillInfo.folder_abs_path)
+                .where(SkillInfo.skill_key == skill_key)
+            )).one_or_none()
+            meta_row = (await session.execute(
+                select(SkillMdMeta.system_prompt)
+                .where(SkillMdMeta.skill_key == skill_key)
+            )).scalar_one_or_none()
+
+        if row:
+            body = meta_row or ""
+            xml_body = build_skill_xml(skill_key, body, row.folder_abs_path)
+            await SkillRegistry.write_skill(skill_key, {
+                "skill_key": skill_key,
+                "skill_desc": row.skill_desc or "",
+                "skill_body": body,
+                "skill_xml_body": xml_body,
+            })
 
 
 async def delete_skill(skill_key: str) -> None:
-    from app.skills.manager import GlobalSkillManager
-
-    # 读取磁盘路径
     async with get_db_session() as session:
         row = (await session.execute(
             select(SkillInfo).where(SkillInfo.skill_key == skill_key)
@@ -151,15 +189,33 @@ async def delete_skill(skill_key: str) -> None:
         if folder.exists():
             shutil.rmtree(folder)
 
-    # 删三表记录
     async with get_db_session() as session:
         await session.execute(delete(AgentSkillRel).where(AgentSkillRel.skill_key == skill_key))
         await session.execute(delete(SkillMdMeta).where(SkillMdMeta.skill_key == skill_key))
         await session.execute(delete(SkillInfo).where(SkillInfo.skill_key == skill_key))
         await session.commit()
 
-    GlobalSkillManager.invalidate(skill_key)
+    await SkillRegistry.delete_skill(skill_key)
     logger.info(f"[Skill] 已删除: {skill_key}")
+
+
+async def get_skill_detail(skill_key: str) -> dict | None:
+    """获取技能详情（含 full_md_content，供前端 Markdown 渲染）。"""
+    async with get_db_session() as session:
+        info_row = (await session.execute(
+            select(SkillInfo.display_name).where(SkillInfo.skill_key == skill_key)
+        )).scalar_one_or_none()
+        meta_row = (await session.execute(
+            select(SkillMdMeta.full_md_content).where(SkillMdMeta.skill_key == skill_key)
+        )).scalar_one_or_none()
+
+    if info_row is None:
+        return None
+    return {
+        "skill_key": skill_key,
+        "display_name": info_row,
+        "full_md_content": meta_row or "",
+    }
 
 
 def _row_to_dict(r: SkillInfo) -> dict:

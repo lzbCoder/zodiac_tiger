@@ -87,12 +87,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"MCP Manager 初始化失败: {e}")
 
-    try:
-        from app.skills.manager import GlobalSkillManager
-        await GlobalSkillManager.init()
-    except Exception as e:
-        logger.error(f"Skill Manager 初始化失败: {e}")
-
     # 启动定时清理任务
     start_cleanup_task()
 

@@ -19,11 +19,16 @@ class FileSystemSkillProvider(SkillProvider):
         return self._root / skill_id
 
     async def get_metadata(self, skill_id: str) -> dict:
+        """实现抽象基类要求的 get_metadata，返回 SKILL.md frontmatter dict。"""
         p = self._skill_md(skill_id)
         if not p.exists():
             raise SkillNotFoundError(skill_id)
-        meta, _ = split_frontmatter(p.read_text(encoding="utf-8"))
-        return meta
+        frontmatter, _ = split_frontmatter(p.read_text(encoding="utf-8"))
+        return frontmatter
+
+    async def get_frontmatter(self, skill_id: str) -> dict:
+        """get_metadata 的语义别名，供内部代码使用。"""
+        return await self.get_metadata(skill_id)
 
     async def get_body(self, skill_id: str) -> str:
         p = self._skill_md(skill_id)
