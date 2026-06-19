@@ -15,7 +15,7 @@ from app.prompts.loader import render
 from app.skills.registry import SkillRegistry
 from app.state.report_state import ReportState
 from app.tools.report_tools import REPORT_TOOLS
-from app.agents.agent_utils import build_tool_desc_section
+from app.agents.agent_utils import build_tool_desc_section, astream_accumulate
 
 from sqlalchemy import select
 
@@ -64,10 +64,10 @@ async def activate_skill_node(state: ReportState, config: RunnableConfig) -> dic
     catalog_text = "\n".join(f"- {c['skill_key']}：{c['skill_desc']}" for c in catalog)
 
     prompt = render("skill_activate", task=state.get("task", ""), catalog_text=catalog_text)
-    llm = create_llm(settings.INTENT_MODEL, streaming=False, tags=["skip_stream"])
-    resp = await llm.ainvoke(prompt)
+    llm = create_llm(settings.INTENT_MODEL, streaming=True)
+    content = await astream_accumulate(llm, prompt)
     try:
-        text = resp.content.strip()
+        text = content.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
         selected_keys = json.loads(text).get("skill_keys", [])
@@ -123,7 +123,7 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
 
     static_tools = {
         t.name: t for t in REPORT_TOOLS
-        if t.name != "tavily_search_report" or enable_search
+        if t.name != "web_search" or enable_search
     }
     try:
         mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("report_agent")}
@@ -145,14 +145,14 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
     )
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
-    resp = await llm.ainvoke(prompt)
+    content = await astream_accumulate(llm, prompt)
     try:
-        text = resp.content.strip()
+        text = content.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
         plan = json.loads(text)
     except json.JSONDecodeError:
-        logger.warning(f"Planner JSON 解析失败: {resp.content[:200]}")
+        logger.warning(f"Planner JSON 解析失败: {content[:200]}")
         plan = {"thought": "无法解析思考结果，直接生成报告", "action": None, "action_input": {}, "finish": True}
 
     return {

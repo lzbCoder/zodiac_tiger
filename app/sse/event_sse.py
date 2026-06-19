@@ -73,9 +73,15 @@ SUB_NODE_PARENT: dict[str, str] = {
     "assistant_answer_generator": "智能助手",
 }
 
-# 流式输出结果的节点
+# 流式输出结果到主回复的节点（token → 正文）
 STREAM_NODES = {"chat_agent", "document_agent",
                 "generate_plan", "report_generator", "assistant_answer_generator"}
+
+# 思考型节点：LLM 流式输出作为「思考」附属条目展示（thinking / thinking_token）
+THINKING_NODES = {
+    "collect_params", "activate_skill", "planner",
+    "assistant_triage", "assistant_activate_skill", "assistant_planner",
+}
 
 
 def _now_ts() -> int:
@@ -86,9 +92,9 @@ def _now_ts() -> int:
 
 @dataclass
 class AgentEvent:
-    event_type: str       # thought | tool | progress | token | retrieval
+    event_type: str       # progress | tool | thinking | thinking_token | token | retrieval | ...
     name: str             # 步骤/工具/模型名
-    status: str           # running | done | error
+    status: str           # running | completed | error
     content: str = ""
     cost_ms: int = 0
     timestamp: int = field(default_factory=_now_ts)
@@ -116,34 +122,32 @@ class _ParseState:
     react_rounds: dict[str, int] = field(default_factory=dict)  # ReAct 节点当前轮次（start 时写入，end 时读取）
 
 
-# ReAct 循环节点（每轮独立命名，不合并）
+# ReAct 循环节点（每轮重复出现，靠 react_round 字段区分，不在名称上加 #n）
 _REACT_NODES = {
     "planner", "tool_executor", "observation",
-    "assistant_planner", "assistant_tool_executor", "assistant_observation",
-}
-
-# ReAct 进度事件应隐藏的节点（属于助手子图内部循环，对用户无信息价值）
-_HIDE_PROGRESS = {
-    "assistant_collect_task", "assistant_triage",
     "assistant_planner", "assistant_tool_executor", "assistant_observation",
 }
 
 
 # ---- parse_events 私有辅助函数 ----
 
-def _get_label_parent(raw_parent: str, state: _ParseState) -> str:
-    """将父节点原始名称转换为显示名，ReAct 节点附加当前轮次编号。"""
-    if raw_parent in _REACT_NODES:
-        return f"{NODE_LABELS[raw_parent]} #{state.cycle_counts.get(raw_parent, 1)}"
+def _node_kind(node: str) -> str:
+    """主阶段(stage) vs 子步骤(substep)：子图内部节点为 substep，其余为 stage。"""
+    return "substep" if node in SUB_NODE_PARENT else "stage"
+
+
+def _get_label_parent(raw_parent: str) -> str:
+    """将节点原始名称转换为纯显示名（ReAct 节点不再附加 #n，靠 react_round 区分轮次）。"""
     return NODE_LABELS.get(raw_parent, raw_parent)
 
 
 def _handle_chain_start(_node: str, display_name: str, data: dict, state: _ParseState) -> list[AgentEvent]:
-    """处理 on_chain_start：记录开始时间，返回需发射的进度/计划事件列表。"""
-    events = []
+    """处理 on_chain_start：记录开始时间，返回进度事件。"""
     state.node_starts[_node] = _now_ts()
     parent = SUB_NODE_PARENT.get(_node, "")
-    meta_dict = {"parent_node": parent} if parent else {}
+    meta_dict: dict = {"node_kind": _node_kind(_node)}
+    if parent:
+        meta_dict["parent_node"] = parent
 
     # ReAct 节点：从 input 读取 react_loop_count，确保与 end 时一致
     if _node in _REACT_NODES:
@@ -152,34 +156,11 @@ def _handle_chain_start(_node: str, display_name: str, data: dict, state: _Parse
         state.react_rounds[_node] = react_round
         meta_dict["react_round"] = react_round
 
-    # 助手子图内部循环节点隐藏进度事件
-    if _node not in _HIDE_PROGRESS:
-        events.append(AgentEvent(
-            event_type="progress", name=display_name,
-            status="running", content=_node,
-            metadata=meta_dict,
-        ))
-
-    # planner 节点：预发射 plan 事件，将首个 pending 步骤置为 in_progress，供前端提前展示转圈动画
-    if _node in ("assistant_planner", "planner"):
-        _input = data.get("input", {}) or {}
-        if isinstance(_input, dict):
-            _steps = _input.get("plan_steps")
-            if _steps:
-                _updated = [dict(s) for s in _steps]
-                for _s in _updated:
-                    if _s.get("status") == "pending":
-                        _s["status"] = "in_progress"
-                        break
-                # 从映射表读取父节点，避免硬编码（planner→报表生成，assistant_planner→智能助手）
-                parent_label = SUB_NODE_PARENT.get(_node, "")
-                events.append(AgentEvent(
-                    event_type="plan", name="执行计划",
-                    status="running",
-                    metadata={"steps": _updated, "parent_node": parent_label},
-                ))
-
-    return events
+    return [AgentEvent(
+        event_type="progress", name=display_name,
+        status="running", content=_node,
+        metadata=meta_dict,
+    )]
 
 
 def _build_chain_end_meta(name: str, output: dict, state: _ParseState) -> tuple[dict, int]:
@@ -189,14 +170,20 @@ def _build_chain_end_meta(name: str, output: dict, state: _ParseState) -> tuple[
 
     raw_intent = output.get("intent", "")
     label_intent = INTENT_LABELS.get(raw_intent, raw_intent)
-    meta_dict = {"intent": label_intent} if raw_intent and name == "dispatcher" else {}
+    meta_dict: dict = {"node_kind": _node_kind(name)}
+    if raw_intent and name == "dispatcher":
+        meta_dict["intent"] = label_intent
 
     parent = SUB_NODE_PARENT.get(name, "")
     if parent:
         meta_dict["parent_node"] = parent
 
     # 各节点特有的 detail / react_round 字段
-    if name in ("activate_skill", "assistant_activate_skill"):
+    if name in ("collect_task", "assistant_collect_task"):
+        task = output.get("task", "")
+        if task:
+            meta_dict["detail"] = f"收集到的任务：\n{task[:600]}"
+    elif name in ("activate_skill", "assistant_activate_skill"):
         skill_infos = output.get("_activated_skill_infos", [])
         if skill_infos:
             lines = "\n".join(f"- {s.get('display_name', '')}：{s.get('skill_desc', '')}" for s in skill_infos)
@@ -217,110 +204,89 @@ def _build_chain_end_meta(name: str, output: dict, state: _ParseState) -> tuple[
         if rnd is None:
             rnd = output.get("react_loop_count") or state.cycle_counts.get(name, 1)
         meta_dict["react_round"] = rnd
-        if name in ("planner", "assistant_planner"):
-            thought = output.get("current_thought", "")
-            if thought:
-                meta_dict["detail"] = f"🧠 思考：{thought[:300]}"
-        elif name in ("tool_executor", "assistant_tool_executor"):
-            tcs = output.get("tool_calls", [])
-            if tcs:
-                args_str = json.dumps(tcs[-1].get("args", {}), ensure_ascii=False)[:200]
-                meta_dict["detail"] = f"🔧 {tcs[-1].get('name','')} 入参: {args_str}"
-        elif name in ("observation", "assistant_observation"):
+        # 分析思考(planner) → 思考条目；工具执行(tool_executor) → 工具调用条目；
+        # 数据观察(observation) → 详情（此处仅保留观察 detail，思考/工具由专门条目承载）
+        if name in ("observation", "assistant_observation"):
             obs = output.get("observations", [])
             if obs:
-                meta_dict["detail"] = f"📊 {obs[-1].get('result','')[:300]}"
+                meta_dict["detail"] = f"📊 {obs[-1].get('result','')[:600]}"
 
     return meta_dict, cost
 
 
 def _handle_chain_end(name: str, meta: dict, output: dict, display_name: str, state: _ParseState) -> list[AgentEvent]:
-    """处理 on_chain_end：返回进度完成事件，以及复杂任务的 plan 更新事件。"""
-    events = []
+    """处理 on_chain_end：返回进度完成事件。"""
     meta_dict, cost = _build_chain_end_meta(name, output, state)
-
-    # 助手子图内部循环节点隐藏进度事件（与 on_chain_start 一致）
-    if name not in _HIDE_PROGRESS:
-        events.append(AgentEvent(
-            event_type="progress", name=display_name,
-            status="completed", cost_ms=cost,
-            metadata=meta_dict,
-        ))
-
-    # plan 事件：即使节点被隐藏也须发射（triage 生成初始计划 / planner 每轮更新状态）
-    plan_steps = output.get("plan_steps")
-    if plan_steps:
-        _log.info(f"[plan] 节点={name} langgraph_node={meta.get('langgraph_node', '')} 步骤数={len(plan_steps)} 状态={[s.get('status') for s in plan_steps]}")
-        all_done = all(s.get("status") == "done" for s in plan_steps)
-        events.append(AgentEvent(
-            event_type="plan", name="执行计划",
-            status="completed" if all_done else "running",
-            metadata={"steps": plan_steps, "parent_node": "智能助手"},
-        ))
-
-    return events
+    return [AgentEvent(
+        event_type="progress", name=display_name,
+        status="completed", cost_ms=cost,
+        metadata=meta_dict,
+    )]
 
 
-def _handle_chat_model_stream(node: str, data: dict, tags: list) -> AgentEvent | None:
-    """处理 on_chat_model_stream：skip_stream 标记时忽略，否则返回 token AgentEvent。"""
+def _thinking_meta(node: str, state: _ParseState) -> dict:
+    """构建思考条目的 metadata：挂载到的子步骤显示名 + ReAct 轮次。"""
+    meta_dict = {"attach_to": NODE_LABELS.get(node, node)}
+    if node in _REACT_NODES:
+        meta_dict["react_round"] = state.react_rounds.get(node, 1)
+    return meta_dict
+
+
+def _handle_chat_model_start(node: str, state: _ParseState) -> AgentEvent | None:
+    """处理 on_chat_model_start：思考节点记录计时并发射 thinking(running)。"""
+    if node not in THINKING_NODES:
+        return None
+    state.node_starts[f"think:{node}"] = _now_ts()
+    return AgentEvent(
+        event_type="thinking", name=NODE_LABELS.get(node, node),
+        status="running", metadata=_thinking_meta(node, state),
+    )
+
+
+def _handle_chat_model_stream(node: str, data: dict, tags: list, state: _ParseState) -> AgentEvent | None:
+    """处理 on_chat_model_stream：STREAM_NODES→正文 token；THINKING_NODES→thinking_token。"""
     if "skip_stream" in tags:
         return None
-    if node not in STREAM_NODES:
-        return None
     chunk = data.get("chunk")
-    if chunk and hasattr(chunk, "content") and chunk.content:
-        _log.debug(f"[token] 节点={node} chunk={chunk.content}")
+    if not (chunk and hasattr(chunk, "content") and chunk.content):
+        return None
+    if node in STREAM_NODES:
         return AgentEvent(
             event_type="token", name=node,
-            status="completed", content=chunk.content,
+            status="running", content=chunk.content,
+        )
+    if node in THINKING_NODES:
+        return AgentEvent(
+            event_type="thinking_token", name=NODE_LABELS.get(node, node),
+            status="running", content=chunk.content,
+            metadata=_thinking_meta(node, state),
         )
     return None
 
 
 def _handle_chat_model_end(name: str, meta: dict, data: dict, state: _ParseState) -> list[AgentEvent]:
-    """处理 on_chat_model_end：隐藏节点发射 plan_step_detail，其余节点发射 thought 事件。"""
-    events = []
-    key = f"llm:{name}"
-    start = state.node_starts.pop(key, _now_ts())
+    """处理 on_chat_model_end：思考节点发射 thinking(completed) 含完整内容与耗时。"""
+    node = meta.get("langgraph_node", name)
+    if node not in THINKING_NODES:
+        return []
+    start = state.node_starts.pop(f"think:{node}", _now_ts())
     cost = _now_ts() - start
     output = data.get("output", {})
-    content = output.content if hasattr(output, "content") else str(output)[:500]
-    raw = meta.get("langgraph_node", name)
-
-    if raw in _HIDE_PROGRESS:
-        # assistant_planner 节点发射 plan_step_detail 供前端实时更新当前步骤 detail
-        if raw == "assistant_planner":
-            _thought = content
-            try:
-                _parsed = json.loads(content)
-                if isinstance(_parsed, dict):
-                    _thought = _parsed.get("thought", "") or _parsed.get("thought", content)
-            except (json.JSONDecodeError, TypeError):
-                pass
-            events.append(AgentEvent(
-                event_type="plan_step_detail", name="assistant_planner",
-                status="completed", content=_thought[:2000],
-            ))
-        return events  # 其余隐藏节点不发射 thought 事件
-
-    if raw in _REACT_NODES:
-        thought_name = f"{NODE_LABELS[raw]} #{state.cycle_counts.get(raw, 1)}"
-    else:
-        thought_name = NODE_LABELS.get(raw, raw)
-
-    meta_dict: dict = {}
-    parent = SUB_NODE_PARENT.get(raw, "")
-    if parent:
-        meta_dict["parent_node"] = parent
-    if raw in _REACT_NODES:
-        meta_dict["react_round"] = state.react_rounds.get(raw, 1)
-
-    events.append(AgentEvent(
-        event_type="thought", name=thought_name,
+    content = output.content if hasattr(output, "content") else str(output)[:2000]
+    return [AgentEvent(
+        event_type="thinking", name=NODE_LABELS.get(node, node),
         status="completed", content=content, cost_ms=cost,
-        metadata=meta_dict,
-    ))
-    return events
+        metadata=_thinking_meta(node, state),
+    )]
+
+
+def _tool_attach_meta(meta: dict, state: _ParseState) -> dict:
+    """工具条目的挂载信息：attach_to=纯节点显示名（如"工具执行"）+ ReAct 轮次。"""
+    raw_parent = meta.get("langgraph_node", "")
+    attach: dict = {"attach_to": _get_label_parent(raw_parent)}
+    if raw_parent in _REACT_NODES:
+        attach["react_round"] = state.react_rounds.get(raw_parent, 1)
+    return attach
 
 
 def _handle_tool_start(name: str, meta: dict, data: dict, state: _ParseState) -> AgentEvent:
@@ -328,12 +294,10 @@ def _handle_tool_start(name: str, meta: dict, data: dict, state: _ParseState) ->
     state.node_starts[f"tool:{name}"] = _now_ts()
     tool_input = data.get("input", {})
     args_str = json.dumps(tool_input, ensure_ascii=False) if isinstance(tool_input, dict) else str(tool_input)
-    raw_parent = meta.get("langgraph_node", "")
-    # ReAct 节点需用带轮次编号的显示名，否则前端 _findStep 父节点匹配失败
     return AgentEvent(
         event_type="tool", name=name,
-        status="running", content=str(tool_input)[:500],
-        metadata={"tool_args": args_str, "parent_node": _get_label_parent(raw_parent, state)},
+        status="running", content=str(tool_input)[:2000],
+        metadata={"tool_name": name, "tool_args": args_str[:2000], **_tool_attach_meta(meta, state)},
     )
 
 
@@ -344,14 +308,15 @@ def _handle_tool_end(name: str, meta: dict, data: dict, state: _ParseState) -> A
     cost = _now_ts() - start
     tool_output = data.get("output", "")
     output_str = str(tool_output)
-    raw_parent = meta.get("langgraph_node", "")
+    status = "error" if output_str.startswith("工具执行失败") or output_str.startswith("未知工具") else "completed"
     return AgentEvent(
         event_type="tool", name=name,
-        status="completed", content=output_str[:1000], cost_ms=cost,
+        status=status, content=output_str[:2000], cost_ms=cost,
         metadata={
-            "tool_result": output_str[:300],
+            "tool_name": name,
+            "tool_result": output_str[:2000],
             "cost_sec": round(cost / 1000, 1),
-            "parent_node": _get_label_parent(raw_parent, state),
+            **_tool_attach_meta(meta, state),
         },
     )
 
@@ -386,12 +351,10 @@ async def parse_events(stream):
         else:
             _node = ""
 
-        # ReAct 循环节点：每轮独立命名（仅在 start 时递增，end 只读取）
-        if _node in _REACT_NODES:
-            if ev == "on_chain_start" and _node in NODE_LABELS:
-                state.cycle_counts[_node] = state.cycle_counts.get(_node, 0) + 1
-            display_name = f"{NODE_LABELS[_node]} #{state.cycle_counts.get(_node, 1)}"
-        elif _node:
+        # ReAct 循环节点：名称保持纯文本（不加 #n），仅在 start 时递增 cycle_counts 以写 react_round
+        if _node in _REACT_NODES and ev == "on_chain_start" and _node in NODE_LABELS:
+            state.cycle_counts[_node] = state.cycle_counts.get(_node, 0) + 1
+        if _node:
             display_name = NODE_LABELS.get(_node, _node)
         else:
             display_name = NODE_LABELS.get(name, name)
@@ -409,14 +372,16 @@ async def parse_events(stream):
             for ae in _handle_chain_end(_node, meta, output, display_name, state):
                 yield ae
 
-        # --- on_chat_model_start: LLM 开始计时 ---
+        # --- on_chat_model_start: 思考节点发射 thinking(running) ---
         elif ev == "on_chat_model_start":
-            state.node_starts[f"llm:{name}"] = _now_ts()
+            ae = _handle_chat_model_start(meta.get("langgraph_node", ""), state)
+            if ae:
+                yield ae
 
-        # --- on_chat_model_stream: 流式 token ---
+        # --- on_chat_model_stream: 正文 token / 思考增量 ---
         elif ev == "on_chat_model_stream":
             node = meta.get("langgraph_node", "")
-            ae = _handle_chat_model_stream(node, data, tags)
+            ae = _handle_chat_model_stream(node, data, tags, state)
             if ae:
                 yield ae
 

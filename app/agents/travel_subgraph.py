@@ -1,11 +1,15 @@
 """Travel SubGraph：参数提取 → 校验 → 中断 → 高德查询 → LLM 生成行程"""
 
+import json
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
+from app.config import settings
+from app.factory.llm_factory import create_llm
 from app.state.travel_state import TravelState
 from app.prompts.loader import render
+from app.agents.agent_utils import astream_accumulate
 
 # 必填参数
 _REQUIRED = ["traveler_count", "budget", "days", "origin", "destination"]
@@ -21,27 +25,23 @@ _LABELS = {
 # ---- 节点：参数提取 ----
 
 async def collect_params_node(state: TravelState, config: RunnableConfig) -> dict:
-    """LLM 从用户消息中结构化提取旅游参数。"""
-    from app.factory.llm_factory import create_llm
-    from app.config import settings
-
+    """LLM 从用户消息中结构化提取旅游参数（流式，思考过程实时展示）。"""
     user_msg = ""
     for m in reversed(state.get("messages", [])):
         if hasattr(m, "type") and m.type == "human":
             user_msg = m.content
             break
 
-    llm = create_llm(settings.INTENT_MODEL, streaming=False)
+    llm = create_llm(settings.INTENT_MODEL, streaming=True)
     prompt = render("travel_collect_params", user_msg=user_msg)
-    resp = await llm.ainvoke(prompt)
+    content = await astream_accumulate(llm, prompt)
     try:
-        import json
-        text = resp.content.strip()
+        text = content.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
         params = json.loads(text)
     except Exception:
-        logger.warning(f"参数提取 JSON 解析失败: {resp.content[:200]}")
+        logger.warning(f"参数提取 JSON 解析失败: {content[:200]}")
         return {}
 
     result = {}
@@ -112,9 +112,6 @@ async def query_route_node(state: TravelState, config: RunnableConfig) -> dict:
 # ---- 节点：LLM 生成行程 ----
 
 async def generate_plan_node(state: TravelState, config: RunnableConfig) -> dict:
-    from app.factory.llm_factory import create_llm
-    from app.config import settings
-
     route = state.get("route_info", {})
     weather = state.get("weather_info", {})
 

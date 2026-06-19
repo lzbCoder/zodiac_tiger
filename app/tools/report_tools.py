@@ -30,16 +30,4 @@ def read_excel(file_path: str) -> str:
         return f"读取失败: {e}"
 
 
-@tool
-def tavily_search_report(query: str) -> str:
-    """联网搜索行业数据、市场报告、背景信息。"""
-    result = web_search.invoke({"query": query})
-    if isinstance(result, dict) and result.get("results"):
-        return "\n".join(
-            f"[{r['title']}]({r.get('url','')})\n{r.get('content','')[:800]}"
-            for r in result["results"][:5]
-        )
-    return str(result)
-
-
-REPORT_TOOLS = [query_sql, read_excel, tavily_search_report]
+REPORT_TOOLS = [query_sql, read_excel, web_search]

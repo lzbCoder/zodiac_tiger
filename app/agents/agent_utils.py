@@ -3,6 +3,19 @@
 from langchain_core.tools import BaseTool
 
 
+async def astream_accumulate(llm, prompt) -> str:
+    """流式调用 LLM 并累积完整文本。
+
+    用于"思考"型节点：必须走 astream 路径才能触发 on_chat_model_stream 事件
+    （ainvoke 走非流式 _agenerate，不会发流式 token），但节点本身仍需整段文本解析 JSON。
+    """
+    content = ""
+    async for chunk in llm.astream(prompt):
+        if chunk.content:
+            content += chunk.content
+    return content
+
+
 def tool_schema_text(tool: BaseTool) -> str:
     """从 LangChain BaseTool 的 args_schema 提取参数描述，内联到 prompt 中。"""
     schema_cls = getattr(tool, "args_schema", None)

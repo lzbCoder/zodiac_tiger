@@ -2,6 +2,7 @@ import urllib.parse
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from loguru import logger
+from psycopg_pool import AsyncConnectionPool
 
 from app.config import settings
 
@@ -12,7 +13,7 @@ class CheckpointRepository:
     def __init__(self, conn_string: str, schema: str):
         self._conn_string = conn_string
         self._schema = schema
-        self._ctx = None
+        self._pool: AsyncConnectionPool | None = None
         self._saver: AsyncPostgresSaver | None = None
         self._maint_engine = None  # 维护操作专用引擎，与业务连接池隔离
 
@@ -22,18 +23,34 @@ class CheckpointRepository:
         """初始化连接池、建表、扩展 schema，返回 AsyncPostgresSaver 实例。"""
         if self._saver is not None:
             return self._saver
-        self._ctx = AsyncPostgresSaver.from_conn_string(self._conn_string)
-        self._saver = await self._ctx.__aenter__()
+
+        # 使用 AsyncConnectionPool 替代裸连接，避免长时间闲置后连接失效
+        self._pool = AsyncConnectionPool(
+            conninfo=self._conn_string,
+            min_size=1,
+            max_size=5,
+            # 连接参数：TCP keepalive 保活 + 空闲超时检测
+            kwargs={
+                "keepalives": 1,
+                "keepalives_idle": 30,      # 30s 无数据时发送 keepalive 探针
+                "keepalives_interval": 10,  # 探针间隔 10s
+                "keepalives_count": 5,      # 连续 5 次失败则断开
+            },
+            open=False,  # 手动控制 open
+        )
+        await self._pool.open()
+
+        self._saver = AsyncPostgresSaver(self._pool)
         await self._saver.setup()
         await self._extend_schema()
-        logger.info("LangGraph checkpoint 初始化完成 (PostgreSQL)")
+        logger.info("LangGraph checkpoint 初始化完成 (PostgreSQL, AsyncConnectionPool)")
         return self._saver
 
     async def close(self) -> None:
         """关闭连接池。"""
-        if self._ctx:
-            await self._ctx.__aexit__(None, None, None)
-            self._ctx = None
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
             self._saver = None
         if self._maint_engine:
             await self._maint_engine.dispose()

@@ -64,19 +64,28 @@ async def _yield_fallback(snap, full_content, result: list):
 
 
 def _yield_progress(name: str, buf: list):
-    """yield 一对 running + completed 进度事件，同时追加到 buf 供后续入库。"""
+    """yield 一对 running + completed 进度事件，同时追加到 buf 供后续入库。
+
+    开始处理/处理完成 属于主阶段(stage)，标注 node_kind 供前端按大图标渲染。
+    """
     for st in ("running", "completed"):
-        ev = AgentEvent(event_type="progress", name=name, status=st)
+        ev = AgentEvent(event_type="progress", name=name, status=st,
+                        metadata={"node_kind": "stage"})
         buf.append(ev)
         yield ev.to_sse()
 
 
-async def _stream_graph(graph, input_data, config, events_buf, session_id: str = ""):
+async def _stream_graph(graph, input_data, config, events_buf, session_id: str = "",
+                        content_out: list | None = None):
     """
     执行 LangGraph astream_events 并逐事件 yield SSE。
-    流式 token 自动累积，结束后以 "_content" 事件存入 events_buf。
+    流式 token 实时累积后通过 content_out[0] 传回，不再写入 events_buf。
     每 10 个事件检查一次 Redis abort 信号，收到则提前终止。
     在任何退出路径上（包括 GeneratorExit）都会关闭 LangGraph 流以释放 checkpoint 连接。
+
+    入库规则：
+    - thinking_token：瞬态增量，不入库（回显由 thinking(completed) 承载）
+    - token：AI 完整回复已在 chat_history，不入库
     """
     full = ""
     r = None
@@ -97,7 +106,8 @@ async def _stream_graph(graph, input_data, config, events_buf, session_id: str =
                         break
                 except Exception:
                     pass
-            events_buf.append(ev)
+            if ev.event_type not in ("thinking_token", "token"):
+                events_buf.append(ev)
             yield ev.to_sse()
             if ev.event_type == "token":
                 full += ev.content
@@ -106,7 +116,8 @@ async def _stream_graph(graph, input_data, config, events_buf, session_id: str =
         await asyncio.shield(stream.aclose())
         raise
     finally:
-        events_buf.append(AgentEvent(event_type="_content", name="", status="completed", content=full))
+        if content_out is not None:
+            content_out.append(full)
 
 
 async def _finalize(snap, full_content, session_id, user_id, config, events_buf):
@@ -181,11 +192,12 @@ async def chat_stream(req: ChatRequest):
                 yield ev
 
             # 5. 执行 Graph 事件流
-            stream_gen = _stream_graph(graph, initial_state, config, events_buf, session_id)
+            content_out: list[str] = []
+            stream_gen = _stream_graph(graph, initial_state, config, events_buf, session_id, content_out)
             async for _sse in stream_gen:
                 yield _sse
             stream_gen = None
-            full_content = next((e.content for e in reversed(events_buf) if e.event_type == "_content"), "")
+            full_content = content_out[0] if content_out else ""
 
             # 6. 检查中断（旅游子图缺参数等）
             snap = await graph.aget_state(config)
@@ -232,10 +244,18 @@ async def chat_stream(req: ChatRequest):
             # 注意：此处不再调用 graph.aget_state() —— 避免在 GeneratorExit 清理路径上复用 checkpointer 连接池中仍有 pending 查询的连接。
             # snap 保持 None 时 summarize_and_prune 自动跳过，不影响执行记录落盘。
             if config is not None:
-                # 先标记所有仍为 running 的事件为 terminated，防止前端一直转圈
-                for ev in events_buf:
+                # 精准标记 terminated：只对没有对应 completed/error 事件的 running 事件转换，
+                # 避免正常完成的节点产生 running→terminated + completed 双记录的数据混乱。
+                from collections import defaultdict
+                completed_positions: dict = defaultdict(list)
+                for i, ev in enumerate(events_buf):
+                    if ev.status in ('completed', 'error'):
+                        completed_positions[(ev.event_type, ev.name)].append(i)
+                for i, ev in enumerate(events_buf):
                     if ev.status == 'running':
-                        ev.status = 'terminated'
+                        key = (ev.event_type, ev.name)
+                        if not any(pos > i for pos in completed_positions[key]):
+                            ev.status = 'terminated'
                 try:
                     await asyncio.shield(_finalize(snap, full_content, session_id, user_id, config, events_buf))
                 except BaseException as e:
@@ -279,11 +299,12 @@ async def chat_resume(req: ResumeRequest):
             }
 
             # 4. 以 Command(resume=params) 恢复 Graph 执行
-            stream_gen = _stream_graph(graph, Command(resume=req.params), full_config, events_buf, sid)
+            content_out: list[str] = []
+            stream_gen = _stream_graph(graph, Command(resume=req.params), full_config, events_buf, sid, content_out)
             async for _sse in stream_gen:
                 yield _sse
             stream_gen = None
-            full_content = next((e.content for e in reversed(events_buf) if e.event_type == "_content"), "")
+            full_content = content_out[0] if content_out else ""
 
             # 5. 检查是否还有后续中断
             snap = await graph.aget_state(full_config)
@@ -326,10 +347,17 @@ async def chat_resume(req: ResumeRequest):
             # 注意：此处不再调用 graph.aget_state() —— 避免在 GeneratorExit 清理路径上
             # 复用 checkpointer 连接池中仍有 pending 查询的连接。
             if full_config is not None:
-                # 先标记所有仍为 running 的事件为 terminated，防止前端一直转圈
-                for ev in events_buf:
+                # 精准标记 terminated：只对没有对应 completed/error 事件的 running 事件转换
+                from collections import defaultdict
+                completed_positions: dict = defaultdict(list)
+                for i, ev in enumerate(events_buf):
+                    if ev.status in ('completed', 'error'):
+                        completed_positions[(ev.event_type, ev.name)].append(i)
+                for i, ev in enumerate(events_buf):
                     if ev.status == 'running':
-                        ev.status = 'terminated'
+                        key = (ev.event_type, ev.name)
+                        if not any(pos > i for pos in completed_positions[key]):
+                            ev.status = 'terminated'
                 try:
                     await asyncio.shield(_finalize(snap, full_content, sid, "admin", full_config, events_buf))
                 except BaseException as e:

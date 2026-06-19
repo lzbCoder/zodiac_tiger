@@ -45,44 +45,23 @@ async def get_events_by_chat(chat_id: str) -> list[dict]:
     items = []
     for r in rows:
         content = r.content or ""
-        intent = ""
-        detail = ""
-        parent_node = ""
-        react_round = None
-        tool_args = ""
-        cost_sec = None
-        steps = None
-        try:
-            if content.startswith("{"):
-                data = json.loads(content)
-                content = data.get("text", content)
-                intent = data.get("intent", "")
-                detail = data.get("detail", "")
-                parent_node = data.get("parent_node", "")
-                react_round = data.get("react_round")
-                tool_args = data.get("tool_args", "")
-                cost_sec = data.get("cost_sec")
-                steps = data.get("steps")
-        except (json.JSONDecodeError, TypeError):
-            pass
         item = {
             "event_type": r.event_type,
             "name": r.name,
             "status": r.status,
-            "content": content,
             "cost_ms": r.cost_ms,
-            "intent": intent,
-            "detail": detail,
-            "parent_node": parent_node,
             "create_time": r.create_time.strftime("%Y-%m-%d %H:%M:%S") if r.create_time else "",
         }
-        if react_round is not None:
-            item["react_round"] = react_round
-        if tool_args:
-            item["tool_args"] = tool_args
-        if cost_sec is not None:
-            item["cost_sec"] = cost_sec
-        if steps is not None:
-            item["steps"] = steps
+        # content 为 JSON 时，正文取 text，其余 metadata 字段整体并入
+        # （node_kind / attach_to / react_round / tool_name / tool_args / tool_result / cost_sec / detail / intent ...）
+        try:
+            if content.startswith("{"):
+                data = json.loads(content)
+                item["content"] = data.get("text", "")
+                item.update({k: v for k, v in data.items() if k != "text"})
+            else:
+                item["content"] = content
+        except (json.JSONDecodeError, TypeError):
+            item["content"] = content
         items.append(item)
     return items
