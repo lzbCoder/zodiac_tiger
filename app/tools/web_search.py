@@ -1,6 +1,7 @@
 from langchain_core.tools import tool
 from langchain_tavily._utilities import TavilySearchAPIWrapper
 from app.config import settings
+from app.tools import tool_retry
 
 # 直接使用底层 HTTP 包装器，绕过 LangChain BaseTool 回调体系，
 # 避免 on_tool_start/end 事件被重复触发（TavilySearch 本身是 BaseTool，
@@ -9,6 +10,7 @@ _api = TavilySearchAPIWrapper(tavily_api_key=settings.TAVILY_API_KEY)
 
 
 @tool
+@tool_retry
 def web_search(query: str) -> str:
     """搜索互联网获取最新信息。当需要实时数据、新闻、日期或不确定的知识时使用。"""
     result = _api.raw_results(

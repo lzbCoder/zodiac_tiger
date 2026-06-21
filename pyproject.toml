@@ -29,6 +29,7 @@ dependencies = [
     "pyyaml>=6.0",
     "mcp>=1.27.2",
     "agentskills-core>=0.2.3",
+    "tenacity>=9.0",
 ]
 
 [tool.hatch.build.targets.wheel]

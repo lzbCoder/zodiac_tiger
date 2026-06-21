@@ -10,6 +10,9 @@ from app.factory.llm_factory import create_llm
 from app.state.travel_state import TravelState
 from app.prompts.loader import render
 from app.agents.agent_utils import astream_accumulate
+from app.agents.error_policy import (
+    DEFAULT_RETRY, NO_RETRY, log_and_raise, DEFAULT_TIMEOUT, LONG_TIMEOUT,
+)
 
 # 必填参数
 _REQUIRED = ["traveler_count", "budget", "days", "origin", "destination"]
@@ -54,8 +57,12 @@ async def collect_params_node(state: TravelState, config: RunnableConfig) -> dic
 
 # ---- 节点：参数校验 ----
 
-def validate_params_node(state: TravelState, config: RunnableConfig) -> dict:
-    """循环检查必填参数，缺失时逐个中断。内部自闭环，不依赖条件边。"""
+async def validate_params_node(state: TravelState, config: RunnableConfig) -> dict:
+    """循环检查必填参数，缺失时逐个中断。内部自闭环，不依赖条件边。
+
+    定义为 async：LangGraph 的节点超时仅支持 async 节点（同步执行无法安全取消）。
+    函数体无 await，interrupt() 在 async 节点中同样工作。
+    """
     from langgraph.types import interrupt
 
     updates = {}
@@ -165,13 +172,16 @@ def _all_params_filled(state: TravelState) -> str:
 
 def build_travel_subgraph() -> StateGraph:
     sub = StateGraph(TravelState)
+    sub.set_node_defaults(
+        retry_policy=DEFAULT_RETRY, error_handler=log_and_raise, timeout=DEFAULT_TIMEOUT)
 
     sub.add_node("collect_params", collect_params_node)
     sub.add_node("validate_params", validate_params_node)
-    sub.add_node("query_geo", query_geo_node)
-    sub.add_node("query_weather", query_weather_node)
-    sub.add_node("query_route", query_route_node)
-    sub.add_node("generate_plan", generate_plan_node)
+    # 高德查询节点：失败不重试（外部接口由其自身/工具层兜底）
+    sub.add_node("query_geo", query_geo_node, retry_policy=NO_RETRY)
+    sub.add_node("query_weather", query_weather_node, retry_policy=NO_RETRY)
+    sub.add_node("query_route", query_route_node, retry_policy=NO_RETRY)
+    sub.add_node("generate_plan", generate_plan_node, timeout=LONG_TIMEOUT)
 
     sub.set_entry_point("collect_params")
     sub.add_edge("collect_params", "validate_params")

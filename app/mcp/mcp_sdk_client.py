@@ -102,7 +102,9 @@ class McpSseClient:
         if self._ready is None:
             self._ready = asyncio.Event()
 
-    # 心跳间隔（秒）：百炼 serverless 容器闲置约 5-10 分钟会被回收，每 2 分钟 ping 一次保活
+    # 心跳间隔（秒）。
+    # 实测结论：缩短心跳（45s）不能延长连接寿命——百炼 serverless 约 5 分钟统一回收 SSE
+    # 连接（与 ping 频率无关，三条连接近同一墙钟时刻一起断），故维持 120s 仅用于尽快发现断连。
     _KEEPALIVE_INTERVAL = 120
 
     async def _run_connection(self):
@@ -112,6 +114,9 @@ class McpSseClient:
         Ping 失败说明连接已断，任务退出，下次调用会触发重连。
         """
         from loguru import logger as _logger
+        import time as _time
+        _t0 = _time.monotonic()      # 连接就绪时刻，用于统计存活时长
+        _ping_ok = 0                 # 成功心跳次数
         try:
             async with sse_client(
                 url=self.endpoint,
@@ -122,15 +127,23 @@ class McpSseClient:
                     await session.initialize()
                     self._session = session
                     self._ready.set()
-                    _logger.debug(f"SSE [{self.mcp_key}] 连接就绪，启动心跳（每 {self._KEEPALIVE_INTERVAL}s）")
+                    _t0 = _time.monotonic()
+                    _logger.info(f"SSE [{self.mcp_key}] 连接就绪，启动心跳（每 {self._KEEPALIVE_INTERVAL}s）")
                     while True:
                         await asyncio.sleep(self._KEEPALIVE_INTERVAL)
                         await session.send_ping()
-                        _logger.debug(f"SSE [{self.mcp_key}] 心跳 OK")
+                        _ping_ok += 1
+                        _logger.debug(
+                            f"SSE [{self.mcp_key}] 心跳 OK #{_ping_ok}"
+                            f"（存活 {_time.monotonic() - _t0:.0f}s）"
+                        )
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            _logger.warning(f"SSE [{self.mcp_key}] 连接断开: {e!r}")
+            _logger.warning(
+                f"SSE [{self.mcp_key}] 连接断开（存活 {_time.monotonic() - _t0:.0f}s，"
+                f"成功心跳 {_ping_ok} 次）: {e!r}"
+            )
             self._session_error = e
             if self._ready:
                 self._ready.set()

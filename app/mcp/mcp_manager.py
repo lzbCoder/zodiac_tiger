@@ -7,6 +7,8 @@ from loguru import logger
 from pydantic import BaseModel, Field, create_model
 from langchain_core.tools import BaseTool, StructuredTool
 
+from app.tools import tool_retry
+
 _REDIS_KEY = "mcp:configs"
 
 
@@ -222,6 +224,7 @@ def _make_lc_tool(client, tool_name: str, tool_desc: str, input_schema: str = ""
     _client = client
     _name = tool_name
 
+    @tool_retry
     async def _run(**kwargs: Any) -> str:
         return await _client.call_tool(_name, kwargs)
 

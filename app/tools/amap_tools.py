@@ -3,9 +3,11 @@
 import httpx
 from langchain_core.tools import tool
 from app.config import settings
+from app.tools import tool_retry
 
 
 @tool
+@tool_retry
 def amap_geocode(address: str) -> dict:
     """获取城市经纬度和 adcode（高德地理编码）。"""
     if not settings.AMAP_API_KEY:
@@ -23,6 +25,7 @@ def amap_geocode(address: str) -> dict:
 
 
 @tool
+@tool_retry
 def amap_weather(adcode: str) -> dict:
     """获取该城市天气预报（高德天气）。"""
     if not settings.AMAP_API_KEY:
@@ -39,6 +42,7 @@ def amap_weather(adcode: str) -> dict:
 
 
 @tool
+@tool_retry
 def amap_driving_route(origin: str, destination: str) -> dict:
     """计算驾车距离(km)和预计耗时(h)（高德驾车路径规划）。"""
     if not settings.AMAP_API_KEY:

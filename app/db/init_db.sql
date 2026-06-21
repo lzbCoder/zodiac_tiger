@@ -5,9 +5,9 @@
 CREATE TABLE IF NOT EXISTS root.chat_history (
     id          BIGSERIAL PRIMARY KEY,
     session_id  VARCHAR(64) NOT NULL,
+    chat_id     VARCHAR(64),
     role        VARCHAR(20) NOT NULL,          -- user / ai / system
     content     TEXT        NOT NULL,
-    chat_id     VARCHAR(64),
     create_time TIMESTAMP   NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON root.chat_history(session_id);
@@ -61,6 +61,20 @@ CREATE TABLE IF NOT EXISTS root.execution_log (
     cost_ms     BIGINT,
     create_time TIMESTAMP DEFAULT NOW()
 );
+
+-- 9. 执行错误日志表（节点异常记录，error_handler 写入）
+CREATE TABLE IF NOT EXISTS root.execution_error_log (
+    id                      BIGSERIAL PRIMARY KEY,
+    session_id              VARCHAR(64),
+    chat_id                 VARCHAR(64),
+    error_node_name         VARCHAR(100),
+    error_node_display_name VARCHAR(100),
+    exception_type          VARCHAR(100),
+    exception_info          TEXT,
+    exception_stack         TEXT,
+    create_time             TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_exec_err_chat_id ON root.execution_error_log(chat_id);
 
 -- 10. 用户侧意图能力展示配置表
 CREATE TABLE IF NOT EXISTS root.intent_display_config (

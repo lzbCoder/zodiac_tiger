@@ -15,6 +15,9 @@ from app.skills.registry import SkillRegistry
 from app.state.assistant_state import AssistantState
 from app.tools.web_search import web_search as web_search_tool
 from app.agents.agent_utils import build_tool_desc_section, astream_accumulate
+from app.agents.error_policy import (
+    DEFAULT_RETRY, NO_RETRY, log_and_raise, DEFAULT_TIMEOUT, LONG_TIMEOUT,
+)
 
 _MAX_LOOPS = 10
 
@@ -304,14 +307,16 @@ def route_after_planner(state: AssistantState) -> str:
 
 def build_assistant_agent() -> StateGraph:
     sub = StateGraph(AssistantState)
+    sub.set_node_defaults(
+        retry_policy=DEFAULT_RETRY, error_handler=log_and_raise, timeout=DEFAULT_TIMEOUT)
 
     sub.add_node("assistant_collect_task",     collect_task_node)
     sub.add_node("assistant_triage",           triage_node)
     sub.add_node("assistant_activate_skill",   activate_skill_node)
     sub.add_node("assistant_planner",          planner_node)
-    sub.add_node("assistant_tool_executor",    tool_executor_node)
+    sub.add_node("assistant_tool_executor",    tool_executor_node, retry_policy=NO_RETRY)  # 调工具，不重试整节点
     sub.add_node("assistant_observation",      observation_node)
-    sub.add_node("assistant_answer_generator", answer_generator_node)
+    sub.add_node("assistant_answer_generator", answer_generator_node, timeout=LONG_TIMEOUT)
 
     sub.set_entry_point("assistant_collect_task")
     sub.add_edge("assistant_collect_task",   "assistant_triage")

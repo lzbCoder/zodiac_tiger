@@ -120,6 +120,7 @@ class _ParseState:
     node_starts:  dict[str, int] = field(default_factory=dict)  # node_name → start_timestamp
     cycle_counts: dict[str, int] = field(default_factory=dict)  # ReAct 节点出现次数
     react_rounds: dict[str, int] = field(default_factory=dict)  # ReAct 节点当前轮次（start 时写入，end 时读取）
+    attempts:     dict[str, int] = field(default_factory=dict)  # 节点重试计数（连续 start 无 end = 重试递增，end 复位）
 
 
 # ReAct 循环节点（每轮重复出现，靠 react_round 字段区分，不在名称上加 #n）
@@ -144,8 +145,10 @@ def _get_label_parent(raw_parent: str) -> str:
 def _handle_chain_start(_node: str, display_name: str, data: dict, state: _ParseState) -> list[AgentEvent]:
     """处理 on_chain_start：记录开始时间，返回进度事件。"""
     state.node_starts[_node] = _now_ts()
+    # 重试计数：连续 start 无 end 视为重试（end 时复位）
+    state.attempts[_node] = state.attempts.get(_node, 0) + 1
     parent = SUB_NODE_PARENT.get(_node, "")
-    meta_dict: dict = {"node_kind": _node_kind(_node)}
+    meta_dict: dict = {"node_kind": _node_kind(_node), "attempt": state.attempts[_node]}
     if parent:
         meta_dict["parent_node"] = parent
 
@@ -170,7 +173,7 @@ def _build_chain_end_meta(name: str, output: dict, state: _ParseState) -> tuple[
 
     raw_intent = output.get("intent", "")
     label_intent = INTENT_LABELS.get(raw_intent, raw_intent)
-    meta_dict: dict = {"node_kind": _node_kind(name)}
+    meta_dict: dict = {"node_kind": _node_kind(name), "attempt": state.attempts.pop(name, 1)}
     if raw_intent and name == "dispatcher":
         meta_dict["intent"] = label_intent
 

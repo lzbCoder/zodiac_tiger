@@ -5,6 +5,7 @@ from sqlalchemy import select, func, delete
 from app.db.session import get_db_session
 from app.models.chat_history import ChatHistory
 from app.models.execution_log import ExecutionLog
+from app.models.execution_error_log import ExecutionErrorLog
 
 
 async def create_session() -> str:
@@ -15,6 +16,7 @@ async def delete_session(session_id: str) -> None:
     async with get_db_session() as session:
         await session.execute(delete(ChatHistory).where(ChatHistory.session_id == session_id))
         await session.execute(delete(ExecutionLog).where(ExecutionLog.session_id == session_id))
+        await session.execute(delete(ExecutionErrorLog).where(ExecutionErrorLog.session_id == session_id))
         await session.commit()
 
 

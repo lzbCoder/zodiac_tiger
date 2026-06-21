@@ -10,6 +10,10 @@ from app.agents.memory_recall import memory_recall_node
 from app.agents.memory_extraction import memory_extraction_node
 from app.agents.document_agent import document_agent_node
 from app.agents.chat_agent import chat_agent_node
+from app.agents.error_policy import (
+    DEFAULT_RETRY, NO_RETRY, log_and_raise,
+    DEFAULT_TIMEOUT, LONG_TIMEOUT, SUBGRAPH_TIMEOUT,
+)
 
 
 def route_by_intent(state: AgentState) -> Literal["chat_agent", "report_agent", "travel_agent", "assistant_agent"]:
@@ -30,15 +34,27 @@ def route_by_format(state: AgentState) -> Literal["document_agent", "__end__"]:
 
 def _build_workflow() -> StateGraph:
     workflow = StateGraph(AgentState)
+    # 全局默认：重试 3 次（默认 default_retry_on 区分可恢复/不可恢复）+ 60s 超时 + 错误入库并中止
+    workflow.set_node_defaults(
+        retry_policy=DEFAULT_RETRY, 
+        error_handler=log_and_raise, 
+        timeout=DEFAULT_TIMEOUT   
+    )
 
-    workflow.add_node("memory_recall", memory_recall_node)        
+    workflow.add_node("memory_recall", memory_recall_node)
     workflow.add_node("dispatcher", dispatcher_node)
-    workflow.add_node("report_agent", build_report_subgraph())     # 数据分析子图：继承主图 checkpointer
-    workflow.add_node("travel_agent", build_travel_subgraph())     # 旅游规划子图：继承主图 checkpointer
-    workflow.add_node("assistant_agent", build_assistant_agent())  # 综合助手子图：继承主图 checkpointer
-    workflow.add_node("chat_agent", chat_agent_node)               # 闲聊对话
-    workflow.add_node("document_agent", document_agent_node)
-    workflow.add_node("memory_extraction", memory_extraction_node)
+    # 子图 wrapper：整图不重试、给宽松超时（避免 60s 误杀整个子图、避免重跑整图）
+    workflow.add_node("report_agent", build_report_subgraph(),
+                      retry_policy=NO_RETRY, timeout=SUBGRAPH_TIMEOUT)
+    workflow.add_node("travel_agent", build_travel_subgraph(),
+                      retry_policy=NO_RETRY, timeout=SUBGRAPH_TIMEOUT)
+    workflow.add_node("assistant_agent", build_assistant_agent(),
+                      retry_policy=NO_RETRY, timeout=SUBGRAPH_TIMEOUT)
+    workflow.add_node("chat_agent", chat_agent_node, timeout=LONG_TIMEOUT)  # 闲聊对话
+    workflow.add_node("document_agent", document_agent_node,
+                      retry_policy=NO_RETRY, timeout=LONG_TIMEOUT)          # 生成文件，不重试
+    workflow.add_node("memory_extraction", memory_extraction_node,
+                      retry_policy=NO_RETRY)                                # 写库，不重试
 
     workflow.set_entry_point("memory_recall")
     workflow.add_edge("memory_recall", "dispatcher")

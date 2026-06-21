@@ -16,6 +16,9 @@ from app.skills.registry import SkillRegistry
 from app.state.report_state import ReportState
 from app.tools.report_tools import REPORT_TOOLS
 from app.agents.agent_utils import build_tool_desc_section, astream_accumulate
+from app.agents.error_policy import (
+    DEFAULT_RETRY, NO_RETRY, log_and_raise, DEFAULT_TIMEOUT, LONG_TIMEOUT,
+)
 
 from sqlalchemy import select
 
@@ -258,13 +261,15 @@ def route_after_planner(state: ReportState) -> str:
 
 def build_report_subgraph() -> StateGraph:
     sub = StateGraph(ReportState)
+    sub.set_node_defaults(
+        retry_policy=DEFAULT_RETRY, error_handler=log_and_raise, timeout=DEFAULT_TIMEOUT)
 
     sub.add_node("collect_task",     collect_task_node)
     sub.add_node("activate_skill",   activate_skill_node)
     sub.add_node("planner",          planner_node)
-    sub.add_node("tool_executor",    tool_executor_node)
+    sub.add_node("tool_executor",    tool_executor_node, retry_policy=NO_RETRY)  # 调工具，不重试整节点
     sub.add_node("observation",      observation_node)
-    sub.add_node("report_generator", report_generator_node)
+    sub.add_node("report_generator", report_generator_node, timeout=LONG_TIMEOUT)
 
     sub.set_entry_point("collect_task")
     sub.add_edge("collect_task",    "activate_skill")

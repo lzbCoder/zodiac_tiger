@@ -1,16 +1,19 @@
 """数据分析专用工具集"""
 
 from langchain_core.tools import tool
+from app.tools import tool_retry
 from app.tools.web_search import web_search
 
 
 @tool
+@tool_retry
 def query_sql(sql: str) -> str:
     """执行 SQL 查询业务数据库。输入完整 SQL 语句，返回查询结果。"""
     return f"[SQL 模拟] 已执行: {sql[:200]}\n（请接入真实数据库以获取实际结果）"
 
 
 @tool
+@tool_retry
 def read_excel(file_path: str) -> str:
     """读取 Excel/CSV 文件，返回表头与数据预览。"""
     import os
