@@ -14,11 +14,6 @@ async def dispatcher_node(state: AgentState, config: RunnableConfig) -> dict:
     当前使用 LLM (qwen-turbo) 进行意图识别。
     """
 
-    # 定义空对象，对应 Java null
-    obj = None
-    # 试图访问 None 的属性，直接报 AttributeError，等同于空指针
-    obj.name
-
     user_message = state["messages"][-1].content if state["messages"] else ""
 
     # 意图识别（调用 LLM）→ intent + format

@@ -15,7 +15,19 @@ from app.services import execution_error_service
 
 # ---- 节点级策略 ----
 
-DEFAULT_RETRY = RetryPolicy(max_attempts=3)   # 用默认 default_retry_on：可恢复异常重试，不可恢复不重试
+# LangGraph 默认判定（重试 ConnectionError/5xx/超时，不重试 ValueError/TypeError/OSError 等）。
+# 取 RetryPolicy 默认值，避免 import 私有的 langgraph._internal._retry。
+_default_retry_on = RetryPolicy().retry_on
+
+
+def _node_retry_on(exc: BaseException) -> bool:
+    """节点重试判定：在 LangGraph 默认基础上，额外把 AttributeError 视为不可恢复（不重试）。"""
+    if isinstance(exc, AttributeError):
+        return False
+    return _default_retry_on(exc)
+
+
+DEFAULT_RETRY = RetryPolicy(max_attempts=3, retry_on=_node_retry_on)  # 可恢复重试；AttributeError 等不可恢复不重试
 NO_RETRY = RetryPolicy(max_attempts=1)        # 显式禁用重试（None 会继承默认，必须用这个）
 
 DEFAULT_TIMEOUT = 60                           # 默认节点超时(秒)
