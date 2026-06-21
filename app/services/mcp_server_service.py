@@ -97,6 +97,20 @@ async def toggle_enable_status(mcp_key: str, enable_status: int):
             )
 
 
+async def _update_check_result(mcp_key: str, ok: bool) -> None:
+    """测试连通后回写检测状态与最后检测时间（仅针对已入库的真实 mcp_key）。"""
+    if not mcp_key or mcp_key == "_test":
+        return
+    async with get_db_session() as session:
+        await session.execute(
+            update(McpServerConfig)
+            .where(McpServerConfig.mcp_key == mcp_key)
+            .values(connect_status=1 if ok else 2,
+                    last_check_time=datetime.now(), update_time=datetime.now())
+        )
+        await session.commit()
+
+
 async def test_connect(
     endpoint_url: str,
     auth_headers: dict,
@@ -104,9 +118,9 @@ async def test_connect(
     mcp_key: str = "",
 ) -> dict:
     """
-    仅测试连通性，不入库，返回 {ok, message, tool_count}。
-    SSE：若传入已知 mcp_key 且缓存中有预热连接，直接复用（无冷启动）。
-    否则使用临时连接（触发冷启动）。
+    测试连通性，返回 {ok, message, tool_count}。
+    对已入库的真实 mcp_key，会回写 connect_status 与 last_check_time（_test 临时 key 不写）。
+    SSE：若传入已知 mcp_key 且缓存中有预热连接，直接复用（无冷启动）；否则用临时连接（触发冷启动）。
     """
     from app.mcp.mcp_sdk_client import create_mcp_client, _sse_client_cache
 
@@ -114,12 +128,14 @@ async def test_connect(
         # 复用预热好的持久连接，无需冷启动
         client = _sse_client_cache[mcp_key]
         ok, msg, tools = await client.test_and_list_tools()
+        await _update_check_result(mcp_key, ok)
         return {"ok": ok, "message": msg, "tool_count": len(tools)}
 
     # 新服务或无缓存：用临时连接，用完关闭
     client = create_mcp_client("_test", endpoint_url, auth_headers, transport_type)
     try:
         ok, msg, tools = await client.test_and_list_tools()
+        await _update_check_result(mcp_key, ok)
         return {"ok": ok, "message": msg, "tool_count": len(tools)}
     finally:
         client.close()
