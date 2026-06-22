@@ -1,6 +1,26 @@
 """Agent 子图共享工具函数"""
 
 from langchain_core.tools import BaseTool
+from langchain_core.messages import AIMessage, BaseMessage
+
+
+async def astream_tool_call(llm_with_tools, messages: list[BaseMessage]) -> AIMessage:
+    """流式调用已 bind_tools 的 LLM 并累积成完整 AIMessage。
+
+    原生 Function Calling 用：astream 逐块累加（AIMessageChunk 相加）后得到带
+    .content（推理文本，供思考流）与 .tool_calls（结构化决策）的完整 AIMessage。
+    """
+    acc = None
+    async for chunk in llm_with_tools.astream(messages):
+        acc = chunk if acc is None else acc + chunk
+    if acc is None:
+        return AIMessage(content="")
+    # 累积得到的是 AIMessageChunk，转成普通 AIMessage 便于入 scratchpad
+    return AIMessage(
+        content=acc.content,
+        tool_calls=getattr(acc, "tool_calls", []) or [],
+        additional_kwargs=getattr(acc, "additional_kwargs", {}) or {},
+    )
 
 
 async def astream_accumulate(llm, prompt) -> str:

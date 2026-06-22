@@ -9,14 +9,29 @@ from app.models.conversation_summary import ConversationSummary
 from app.prompts.loader import render
 
 
+def _dialogue_only(messages: list) -> list:
+    """只保留 human / 最终 ai 消息，过滤 Tool / 中间 AIMessage(tool_calls)，避免工具噪音进摘要。
+
+    （当前 scratchpad 已与 durable messages 分离，messages 本就无工具噪音；此为安全网。）"""
+    kept = []
+    for m in messages:
+        mtype = getattr(m, "type", None)
+        if mtype == "human":
+            kept.append(m)
+        elif mtype == "ai" and not getattr(m, "tool_calls", None):
+            kept.append(m)
+    return kept
+
+
 async def _generate_summary(messages: list, existing_summary: str) -> str:
     from app.factory.llm_factory import create_llm
 
     llm = create_llm(settings.MEMORY_SUMMARY_MODEL, streaming=False)
 
+    dialogue = _dialogue_only(messages)
     history = "\n".join(
         f"{'用户' if (hasattr(m, 'type') and m.type == 'human') else 'AI'}: {m.content}"
-        for m in messages[-30:]
+        for m in dialogue[-30:]
     )
 
     prompt = render("summary_compress", existing_summary=existing_summary or "无", history=history)
@@ -106,7 +121,7 @@ async def _run_summarization(
     await _save_summary(user_id, session_id, new_summary, version, len(messages))
     logger.info(f"会话摘要已保存: session={session_id}, version={version}")
 
-    trimmed = list(messages[-20:])
+    trimmed = _dialogue_only(messages)[-20:]
 
     from app.db.checkpoint import get_checkpoint_repo
 

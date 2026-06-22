@@ -1,8 +1,10 @@
-"""数据分析 ReAct 子图：思考 → 行动 → 观察 → 循环 → 报告生成"""
+"""数据分析 ReAct 子图（原生 Function Calling）：思考 → 并行工具 → ToolMessage 回填 → 循环 → 报告生成"""
 
 import json
+import asyncio
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
+from langchain_core.messages import HumanMessage, ToolMessage
 from loguru import logger
 
 from app.config import settings
@@ -10,25 +12,36 @@ from app.db.session import get_db_session
 from app.factory.llm_factory import create_llm
 from app.mcp.mcp_manager import GlobalMcpManager
 from app.models.agent_skill_rel import AgentSkillRel
-from app.models.skill_info import SkillInfo
-from app.prompts.loader import render
+from app.prompts.loader import render, render_messages
 from app.skills.registry import SkillRegistry
 from app.state.report_state import ReportState
 from app.tools.report_tools import REPORT_TOOLS
-from app.agents.agent_utils import build_tool_desc_section, astream_accumulate
+from app.agents.agent_utils import astream_accumulate, astream_tool_call
 from app.agents.error_policy import (
     DEFAULT_RETRY, NO_RETRY, log_and_raise, DEFAULT_TIMEOUT, LONG_TIMEOUT,
 )
 
 from sqlalchemy import select
 
-_TOOL_MAP = {t.name: t for t in REPORT_TOOLS}
 _MAX_LOOPS = 5
 
 
 def _compile_skills(xml_bodies: list[str]) -> str:
     """将多个技能 XML 合并为统一内容（代码合并，不调用 LLM）。"""
     return "\n\n".join(xml_bodies)
+
+
+async def _collect_tools(enable_search: bool) -> dict:
+    """合并静态工具与 MCP 动态工具，返回 name → tool 映射。"""
+    static_tools = {
+        t.name: t for t in REPORT_TOOLS
+        if t.name != "web_search" or enable_search
+    }
+    try:
+        mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("report_agent")}
+    except Exception:
+        mcp_tools = {}
+    return {**static_tools, **mcp_tools}
 
 
 # ---- 节点 1：任务收集 ----
@@ -41,10 +54,8 @@ async def collect_task_node(state: ReportState, config: RunnableConfig) -> dict:
             break
     return {
         "task": user_msg,
-        "observations": [],
-        "tool_calls": [],
+        "scratchpad": [HumanMessage(content=user_msg)],  # 每轮重置 ReAct 草稿
         "react_loop_count": 0,
-        "is_finish": False,
         "skill_context": "",
         "activated_skill_keys": [],
     }
@@ -88,7 +99,7 @@ async def activate_skill_node(state: ReportState, config: RunnableConfig) -> dic
         activated_keys.append(key)
         xml_parts.append(data.get("skill_xml_body", ""))
         skill_infos.append({
-            "display_name": _get_display_name(key, catalog),
+            "display_name": key,
             "skill_desc": data.get("skill_desc", ""),
         })
 
@@ -106,137 +117,81 @@ async def activate_skill_node(state: ReportState, config: RunnableConfig) -> dic
     }
 
 
-def _get_display_name(skill_key: str, catalog: list[dict]) -> str:
-    for c in catalog:
-        if c.get("skill_key") == skill_key:
-            return c.get("display_name", skill_key) if "display_name" in c else skill_key
-    return skill_key
-
-
-# ---- 节点 3：Planner（思考决策） ----
+# ---- 节点 3：Planner（原生 FC 决策，流式推理） ----
 
 async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
-    brief_obs = [
-        {"tool": o.get("tool", "unknown"), "summary": str(o.get("result", ""))[:300]}
-        for o in state.get("observations", [])
-    ]
-    obs_text = json.dumps(brief_obs, ensure_ascii=False)
-    loop = state.get("react_loop_count", 0)
     enable_search = config["configurable"].get("enable_search", False)
+    loop = state.get("react_loop_count", 0)
+    scratchpad = list(state.get("scratchpad", []))
 
-    static_tools = {
-        t.name: t for t in REPORT_TOOLS
-        if t.name != "web_search" or enable_search
-    }
-    try:
-        mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("report_agent")}
-    except Exception:
-        mcp_tools = {}
-    all_tools = {**static_tools, **mcp_tools}
-    tool_section = build_tool_desc_section(all_tools)
-
-    skill_context = state.get("skill_context", "")
-
-    prompt = render(
-        "report_planner",
-        task=state.get("task", ""),
-        skill_context=skill_context,
-        obs_text=obs_text if obs_text != "[]" else "无",
-        loop=loop,
-        max_loops=_MAX_LOOPS,
-        tool_section=tool_section,
-    )
+    tool_map = await _collect_tools(enable_search)
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
-    content = await astream_accumulate(llm, prompt)
-    try:
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        plan = json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning(f"Planner JSON 解析失败: {content[:200]}")
-        plan = {"thought": "无法解析思考结果，直接生成报告", "action": None, "action_input": {}, "finish": True}
+    if tool_map:
+        llm = llm.bind_tools(list(tool_map.values()))
+
+    system_msgs = render_messages(
+        "report_planner",
+        task=state.get("task", ""),
+        skill_context=state.get("skill_context", ""),
+        loop=loop,
+        max_loops=_MAX_LOOPS,
+    )
+    ai = await astream_tool_call(llm, system_msgs + scratchpad)
 
     return {
-        "current_thought": plan.get("thought", ""),
-        "current_action": plan.get("action"),
-        "current_action_input": plan.get("action_input", {}),
-        "is_finish": plan.get("finish", False) or loop + 1 >= _MAX_LOOPS,
+        "scratchpad": scratchpad + [ai],
         "react_loop_count": loop + 1,
     }
 
 
-# ---- 节点 5：工具执行 ----
+# ---- 节点 4：工具执行（并行 + ToolMessage 回填） ----
 
 async def tool_executor_node(state: ReportState, config: RunnableConfig) -> dict:
-    tool_name = state.get("current_action", "") or ""
-    tool_args = state.get("current_action_input", {}) or {}
+    enable_search = config["configurable"].get("enable_search", False)
+    scratchpad = list(state.get("scratchpad", []))
+    last = scratchpad[-1] if scratchpad else None
+    tool_calls = getattr(last, "tool_calls", None) or []
+    if not tool_calls:
+        return {"scratchpad": scratchpad}
 
-    tool = _TOOL_MAP.get(tool_name)
-    if not tool:
+    tool_map = await _collect_tools(enable_search)
+
+    async def _run_one(tc: dict) -> ToolMessage:
+        name = tc.get("name", "")
+        tool = tool_map.get(name)
+        call_id = tc.get("id", "")
+        if not tool:
+            logger.warning(f"[report tool_executor] 无效工具: {name}")
+            return ToolMessage(content=f"未知工具: {name}", tool_call_id=call_id, name=name)
         try:
-            mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("report_agent")}
-            tool = mcp_tools.get(tool_name)
-        except Exception:
-            tool = None
+            result = await tool.ainvoke(tc.get("args", {}))
+            return ToolMessage(content=str(result), tool_call_id=call_id, name=name)
+        except Exception as e:
+            return ToolMessage(content=f"工具执行失败: {e}", tool_call_id=call_id, name=name)
 
-    if not tool:
-        logger.warning(f"[tool_executor] 无效工具: {tool_name}")
-        return {
-            "observation_result": f"未知工具: {tool_name}",
-            "tool_calls": [],
-            "react_loop_count": state.get("react_loop_count", 0),
-        }
-
-    try:
-        if hasattr(tool, "ainvoke"):
-            result = str(await tool.ainvoke(tool_args))
-        else:
-            result = str(tool.invoke(tool_args))
-    except Exception as e:
-        result = f"工具执行失败: {e}"
-
-    return {
-        "observation_result": result,
-        "tool_calls": [{"name": tool_name, "args": tool_args}],
-        "react_loop_count": state.get("react_loop_count", 0),
-    }
+    tool_messages = await asyncio.gather(*[_run_one(tc) for tc in tool_calls])
+    return {"scratchpad": scratchpad + list(tool_messages)}
 
 
-# ---- 节点 6：观察记录 ----
+# ---- 节点 5：报告生成 ----
 
-async def observation_node(state: ReportState, config: RunnableConfig) -> dict:
-    tcs = state.get("tool_calls", [])
-    result = state.get("observation_result", "")
-    if not tcs or not result:
-        return {"react_loop_count": state.get("react_loop_count", 0)}
-    tc = tcs[-1]
-    obs = {
-        "tool": tc.get("name", "unknown"),
-        "args": tc.get("args", {}),
-        "result": result[:3000],
-    }
-    observations = list(state.get("observations", [])) + [obs]
-    return {
-        "observations": observations,
-        "react_loop_count": state.get("react_loop_count", 0),
-    }
+def _scratchpad_observations(scratchpad: list) -> str:
+    """从 scratchpad 的 ToolMessage 汇总工具结果，供报告生成。"""
+    sections = [
+        f"【{getattr(m, 'name', 'tool')}】\n{m.content}"
+        for m in scratchpad if isinstance(m, ToolMessage)
+    ]
+    return "\n\n".join(sections) if sections else "无"
 
-
-# ---- 节点 7：报告生成 ----
 
 async def report_generator_node(state: ReportState, config: RunnableConfig) -> dict:
-    raw_obs = state.get("observations", [])
-    obs_sections = []
-    for o in raw_obs:
-        obs_sections.append(f"【{o.get('tool', 'unknown')}】\n{str(o.get('result', ''))}")
-    obs_text = "\n\n".join(obs_sections) if obs_sections else "无"
-    prompt = render("report_generator", task=state.get("task", ""), obs_text=obs_text)
+    obs_text = _scratchpad_observations(state.get("scratchpad", []))
+    messages = render_messages("report_generator", task=state.get("task", ""), obs_text=obs_text)
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
     resp_content = ""
-    async for chunk in llm.astream(prompt):
+    async for chunk in llm.astream(messages):
         if chunk.content:
             resp_content += chunk.content
     return {
@@ -250,11 +205,13 @@ async def report_generator_node(state: ReportState, config: RunnableConfig) -> d
 # ---- 路由 ----
 
 def route_after_planner(state: ReportState) -> str:
-    if state.get("is_finish", False):
-        return "report_generator"
-    if state.get("react_loop_count", 0) >= _MAX_LOOPS:
-        return "report_generator"
-    return "tool_executor"
+    """planner 决策后：有 tool_calls 且未超上限 → 执行工具；否则 → 生成报告。"""
+    scratchpad = state.get("scratchpad", [])
+    last = scratchpad[-1] if scratchpad else None
+    has_tool_calls = bool(getattr(last, "tool_calls", None))
+    if has_tool_calls and state.get("react_loop_count", 0) < _MAX_LOOPS:
+        return "tool_executor"
+    return "report_generator"
 
 
 # ---- 构建子图 ----
@@ -268,20 +225,18 @@ def build_report_subgraph() -> StateGraph:
     sub.add_node("activate_skill",   activate_skill_node)
     sub.add_node("planner",          planner_node)
     sub.add_node("tool_executor",    tool_executor_node, retry_policy=NO_RETRY)  # 调工具，不重试整节点
-    sub.add_node("observation",      observation_node)
     sub.add_node("report_generator", report_generator_node, timeout=LONG_TIMEOUT)
 
     sub.set_entry_point("collect_task")
-    sub.add_edge("collect_task",    "activate_skill")
-    sub.add_edge("activate_skill",  "planner")
+    sub.add_edge("collect_task",   "activate_skill")
+    sub.add_edge("activate_skill", "planner")
 
     sub.add_conditional_edges("planner", route_after_planner, {
         "tool_executor":    "tool_executor",
         "report_generator": "report_generator",
     })
 
-    sub.add_edge("tool_executor", "observation")
-    sub.add_edge("observation",   "planner")
+    sub.add_edge("tool_executor", "planner")   # ToolMessage 回填后回到 planner
     sub.add_edge("report_generator", END)
 
     return sub.compile()

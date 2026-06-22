@@ -1,7 +1,7 @@
 from langchain_core.runnables import RunnableConfig
 
 from app.state.agent_state import AgentState
-from app.prompts.loader import render
+from app.prompts.loader import render, render_messages
 
 
 def _build_memory_context(state: AgentState) -> str:
@@ -57,21 +57,23 @@ async def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
 
     llm = create_llm(settings.CHAT_MODEL, streaming=True)
 
-    history = state.get("messages", [])
-    context = "\n".join(
-        f"{'用户' if m.type == 'human' else 'AI'}: {m.content}"
-        for m in history[-10:]
-    )
     memory_ctx = _build_memory_context(state)
-    prompt = render("chat_reply", memory_ctx=memory_ctx, context=context, user_message=user_message)
 
     if enable_search:
+        # 联网搜索路径：run_with_tools 走原生 FC（字符串入参），单独组装精简 prompt
         from app.tools.executor import run_with_tools
-        prompt += "\n（请使用 web_search 搜索用户问题，搜索结果中的信息优先级高于对话历史。即使对话历史中有不同信息，也必须以搜索结果为准。）"
-        reply = await run_with_tools(llm, prompt)
+        search_prompt = (
+            f"{memory_ctx}用户问题：{user_message}\n"
+            "（请使用 web_search 搜索用户问题，搜索结果中的信息优先级高于对话历史。"
+            "即使对话历史中有不同信息，也必须以搜索结果为准。）"
+        )
+        reply = await run_with_tools(llm, search_prompt)
     else:
+        # 普通路径：角色化消息 = SystemMessage(角色+记忆) + 近 N 条历史（已是 Human/AI 类型）
+        messages = render_messages("chat_reply", memory_ctx=memory_ctx)
+        messages += list(state.get("messages", []))[-10:]
         reply = ""
-        async for chunk in llm.astream(prompt):
+        async for chunk in llm.astream(messages):
             if chunk.content:
                 reply += chunk.content
 

@@ -35,7 +35,6 @@ NODE_LABELS: dict[str, str] = {
     "activate_skill":             "技能激活",
     "planner":                    "分析思考",
     "tool_executor":              "工具执行",
-    "observation":                "数据观察",
     "report_generator":           "报告生成",
     # 综合助手子图-内部节点
     "assistant_collect_task":     "任务收集",
@@ -43,7 +42,6 @@ NODE_LABELS: dict[str, str] = {
     "assistant_activate_skill":   "技能激活",
     "assistant_planner":          "分析思考",
     "assistant_tool_executor":    "工具执行",
-    "assistant_observation":      "数据观察",
     "assistant_answer_generator": "回答生成",
 }
 
@@ -61,7 +59,6 @@ SUB_NODE_PARENT: dict[str, str] = {
     "activate_skill":             "报表生成",
     "planner":                    "报表生成",
     "tool_executor":              "报表生成",
-    "observation":                "报表生成",
     "report_generator":           "报表生成",
     # 综合助手子图：子级 --> 父级
     "assistant_collect_task":     "智能助手",
@@ -69,7 +66,6 @@ SUB_NODE_PARENT: dict[str, str] = {
     "assistant_activate_skill":   "智能助手",
     "assistant_planner":          "智能助手",
     "assistant_tool_executor":    "智能助手",
-    "assistant_observation":      "智能助手",
     "assistant_answer_generator": "智能助手",
 }
 
@@ -125,8 +121,8 @@ class _ParseState:
 
 # ReAct 循环节点（每轮重复出现，靠 react_round 字段区分，不在名称上加 #n）
 _REACT_NODES = {
-    "planner", "tool_executor", "observation",
-    "assistant_planner", "assistant_tool_executor", "assistant_observation",
+    "planner", "tool_executor",
+    "assistant_planner", "assistant_tool_executor",
 }
 
 
@@ -207,12 +203,7 @@ def _build_chain_end_meta(name: str, output: dict, state: _ParseState) -> tuple[
         if rnd is None:
             rnd = output.get("react_loop_count") or state.cycle_counts.get(name, 1)
         meta_dict["react_round"] = rnd
-        # 分析思考(planner) → 思考条目；工具执行(tool_executor) → 工具调用条目；
-        # 数据观察(observation) → 详情（此处仅保留观察 detail，思考/工具由专门条目承载）
-        if name in ("observation", "assistant_observation"):
-            obs = output.get("observations", [])
-            if obs:
-                meta_dict["detail"] = f"📊 {obs[-1].get('result','')[:600]}"
+        # 分析思考(planner) → 思考条目；工具执行(tool_executor) → 工具调用条目（均由专门事件承载）
 
     return meta_dict, cost
 
@@ -246,22 +237,38 @@ def _handle_chat_model_start(node: str, state: _ParseState) -> AgentEvent | None
     )
 
 
+def _chunk_reasoning(obj) -> str:
+    """从 chunk/输出对象提取 reasoning_content（qwen3 思考模式独立通道）。"""
+    ak = getattr(obj, "additional_kwargs", None) or {}
+    return ak.get("reasoning_content") or ""
+
+
 def _handle_chat_model_stream(node: str, data: dict, tags: list, state: _ParseState) -> AgentEvent | None:
-    """处理 on_chat_model_stream：STREAM_NODES→正文 token；THINKING_NODES→thinking_token。"""
+    """处理 on_chat_model_stream：STREAM_NODES→正文 token；THINKING_NODES→thinking_token。
+
+    思考节点双通道：content（正常文本）或 reasoning_content（推理通道）任一有值即作思考流。
+    """
     if "skip_stream" in tags:
         return None
     chunk = data.get("chunk")
-    if not (chunk and hasattr(chunk, "content") and chunk.content):
+    if not chunk:
         return None
+    content = getattr(chunk, "content", "") or ""
+
     if node in STREAM_NODES:
+        if not content:
+            return None
         return AgentEvent(
             event_type="token", name=node,
-            status="running", content=chunk.content,
+            status="running", content=content,
         )
     if node in THINKING_NODES:
+        text = content or _chunk_reasoning(chunk)   # 双通道
+        if not text:
+            return None
         return AgentEvent(
             event_type="thinking_token", name=NODE_LABELS.get(node, node),
-            status="running", content=chunk.content,
+            status="running", content=text,
             metadata=_thinking_meta(node, state),
         )
     return None
@@ -275,7 +282,10 @@ def _handle_chat_model_end(name: str, meta: dict, data: dict, state: _ParseState
     start = state.node_starts.pop(f"think:{node}", _now_ts())
     cost = _now_ts() - start
     output = data.get("output", {})
-    content = output.content if hasattr(output, "content") else str(output)[:2000]
+    if hasattr(output, "content"):
+        content = output.content or _chunk_reasoning(output)   # 双通道：content 为空回退 reasoning
+    else:
+        content = str(output)[:2000]
     return [AgentEvent(
         event_type="thinking", name=NODE_LABELS.get(node, node),
         status="completed", content=content, cost_ms=cost,
@@ -292,22 +302,25 @@ def _tool_attach_meta(meta: dict, state: _ParseState) -> dict:
     return attach
 
 
-def _handle_tool_start(name: str, meta: dict, data: dict, state: _ParseState) -> AgentEvent:
-    """处理 on_tool_start：记录开始时间，返回工具调用开始事件。"""
-    state.node_starts[f"tool:{name}"] = _now_ts()
+def _handle_tool_start(name: str, meta: dict, data: dict, state: _ParseState, run_id: str = "") -> AgentEvent:
+    """处理 on_tool_start：记录开始时间，返回工具调用开始事件。
+
+    用 run_id 作计时键与前端去重键（tool_run_id），支持同名工具并行调用各占一条。
+    """
+    state.node_starts[f"tool:{run_id or name}"] = _now_ts()
     tool_input = data.get("input", {})
     args_str = json.dumps(tool_input, ensure_ascii=False) if isinstance(tool_input, dict) else str(tool_input)
     return AgentEvent(
         event_type="tool", name=name,
         status="running", content=str(tool_input)[:2000],
-        metadata={"tool_name": name, "tool_args": args_str[:2000], **_tool_attach_meta(meta, state)},
+        metadata={"tool_name": name, "tool_run_id": run_id, "tool_args": args_str[:2000],
+                  **_tool_attach_meta(meta, state)},
     )
 
 
-def _handle_tool_end(name: str, meta: dict, data: dict, state: _ParseState) -> AgentEvent:
+def _handle_tool_end(name: str, meta: dict, data: dict, state: _ParseState, run_id: str = "") -> AgentEvent:
     """处理 on_tool_end：计算耗时，返回工具调用完成事件。"""
-    key = f"tool:{name}"
-    start = state.node_starts.pop(key, _now_ts())
+    start = state.node_starts.pop(f"tool:{run_id or name}", _now_ts())
     cost = _now_ts() - start
     tool_output = data.get("output", "")
     output_str = str(tool_output)
@@ -317,6 +330,7 @@ def _handle_tool_end(name: str, meta: dict, data: dict, state: _ParseState) -> A
         status=status, content=output_str[:2000], cost_ms=cost,
         metadata={
             "tool_name": name,
+            "tool_run_id": run_id,
             "tool_result": output_str[:2000],
             "cost_sec": round(cost / 1000, 1),
             **_tool_attach_meta(meta, state),
@@ -395,9 +409,9 @@ async def parse_events(stream):
 
         # --- on_tool_start/end: 工具调用 ---
         elif ev == "on_tool_start":
-            yield _handle_tool_start(name, meta, data, state)
+            yield _handle_tool_start(name, meta, data, state, event.get("run_id", ""))
         elif ev == "on_tool_end":
-            yield _handle_tool_end(name, meta, data, state)
+            yield _handle_tool_end(name, meta, data, state, event.get("run_id", ""))
 
         # --- on_retriever_start/end: 检索事件 ---
         elif ev == "on_retriever_start":
