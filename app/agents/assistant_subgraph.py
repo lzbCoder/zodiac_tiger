@@ -313,7 +313,6 @@ async def answer_generator_node(state: AssistantState, config: RunnableConfig) -
     return {
         "final_answer": answer,
         "generate_content": answer,
-        "generate_format": state.get("generate_format", ""),
         "messages": [{"role": "ai", "content": answer}],
     }
 

@@ -50,7 +50,6 @@ async def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
         reply = resp.content
         result: dict = {
             "generate_content": reply,
-            "generate_format": state.get("generate_format", ""),
             "messages": [{"role": "ai", "content": reply}],
         }
         return result
@@ -81,7 +80,6 @@ async def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     is_physical = fmt and fmt not in ("none", "md")
     result: dict = {
         "generate_content": reply,
-        "generate_format": fmt,
     }
     if not is_physical:
         result["messages"] = [{"role": "ai", "content": reply}]

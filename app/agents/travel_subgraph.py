@@ -156,7 +156,6 @@ async def generate_plan_node(state: TravelState, config: RunnableConfig) -> dict
     return {
         "travel_plan": resp_content,
         "generate_content": resp_content,
-        "generate_format": state.get("generate_format", ""),
         "messages": [{"role": "ai", "content": resp_content}],
     }
 

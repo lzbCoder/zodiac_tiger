@@ -25,11 +25,14 @@ async def dispatcher_node(state: AgentState, config: RunnableConfig) -> dict:
     is_fuzzy = any(kw in user_message for kw in fuzzy_keywords)
 
     chat_id = config["configurable"]["chat_id"]
-    logger.info(f"[调度] intent={intent}, chat_id={chat_id}")
+    logger.info(f"[调度] intent={intent}, format={output_format or 'none'}, chat_id={chat_id}")
 
-    result: dict = {"intent": intent}
-    if output_format:
-        result["generate_format"] = output_format
+    # 每轮强制写入 generate_format：无格式时写 "none"，避免 checkpointer 跨轮残留旧值
+    # 导致下游 route_by_format 读到上一轮格式而误入 document_agent。
+    result: dict = {
+        "intent": intent,
+        "generate_format": output_format or "none",
+    }
     if is_fuzzy:
         result["is_fuzzy_intent"] = True
 

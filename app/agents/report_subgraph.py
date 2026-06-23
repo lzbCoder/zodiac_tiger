@@ -288,7 +288,6 @@ async def report_generator_node(state: ReportState, config: RunnableConfig) -> d
     return {
         "final_report": resp_content,
         "generate_content": resp_content,
-        "generate_format": state.get("generate_format", ""),
         "messages": [{"role": "ai", "content": resp_content}],
     }
 
