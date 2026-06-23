@@ -3,7 +3,6 @@ from langgraph.graph import StateGraph, END
 
 from app.state.agent_state import AgentState
 from app.agents.dispatcher import dispatcher_node
-from app.agents.report_subgraph import build_report_subgraph
 from app.agents.travel_subgraph import build_travel_subgraph
 from app.agents.assistant_subgraph import build_assistant_agent
 from app.agents.memory_recall import memory_recall_node
@@ -16,11 +15,9 @@ from app.agents.error_policy import (
 )
 
 
-def route_by_intent(state: AgentState) -> Literal["chat_agent", "report_agent", "travel_agent", "assistant_agent"]:
+def route_by_intent(state: AgentState) -> Literal["chat_agent", "travel_agent", "assistant_agent"]:
     intent = state.get("intent", "chat")
-    if intent == "report":
-        return "report_agent"
-    elif intent == "travel":
+    if intent == "travel":
         return "travel_agent"
     elif intent == "assistant":
         return "assistant_agent"
@@ -44,8 +41,6 @@ def _build_workflow() -> StateGraph:
     workflow.add_node("memory_recall", memory_recall_node)
     workflow.add_node("dispatcher", dispatcher_node)
     # 子图 wrapper：整图不重试、给宽松超时（避免 60s 误杀整个子图、避免重跑整图）
-    workflow.add_node("report_agent", build_report_subgraph(),
-                      retry_policy=NO_RETRY, timeout=SUBGRAPH_TIMEOUT)
     workflow.add_node("travel_agent", build_travel_subgraph(),
                       retry_policy=NO_RETRY, timeout=SUBGRAPH_TIMEOUT)
     workflow.add_node("assistant_agent", build_assistant_agent(),
@@ -64,7 +59,6 @@ def _build_workflow() -> StateGraph:
         route_by_intent,
         {
             "chat_agent": "chat_agent",
-            "report_agent": "report_agent",
             "travel_agent": "travel_agent",
             "assistant_agent": "assistant_agent",
         },
@@ -72,10 +66,6 @@ def _build_workflow() -> StateGraph:
 
     workflow.add_conditional_edges(
         "chat_agent", route_by_format,
-        {"document_agent": "document_agent", END: "memory_extraction"},
-    )
-    workflow.add_conditional_edges(
-        "report_agent", route_by_format,
         {"document_agent": "document_agent", END: "memory_extraction"},
     )
     workflow.add_conditional_edges(

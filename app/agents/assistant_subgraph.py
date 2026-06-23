@@ -17,6 +17,7 @@ from app.prompts.loader import render, render_messages
 from app.skills.registry import SkillRegistry
 from app.state.assistant_state import AssistantState
 from app.tools.web_search import web_search as web_search_tool
+from app.tools.report_tools import query_sql, read_excel
 from app.tools.meta_tools import request_tools
 from app.agents.agent_utils import (
     astream_accumulate, astream_tool_call, build_tool_candidates, parse_tool_names,
@@ -35,8 +36,11 @@ def _compile_skills(xml_bodies: list[str]) -> str:
 
 
 async def _collect_tools(enable_search: bool) -> dict:
-    """合并静态工具（web_search）与 MCP 动态工具，返回 name → tool 映射（dict 天然按名去重）。"""
-    static_tools = {web_search_tool.name: web_search_tool} if enable_search else {}
+    """合并本地工具（数据分析 query_sql/read_excel + 可选 web_search）与 MCP 动态工具，
+    返回 name → tool 映射（dict 天然按名去重）。"""
+    static_tools = {query_sql.name: query_sql, read_excel.name: read_excel}
+    if enable_search:
+        static_tools[web_search_tool.name] = web_search_tool
     try:
         mcp_tools = {t.name: t for t in await GlobalMcpManager.build_tools_for_agent("assistant_agent")}
     except Exception:

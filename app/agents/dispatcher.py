@@ -51,7 +51,7 @@ async def _detect_intent(message: str, state: AgentState) -> tuple[str, str | No
     resp = await llm.ainvoke(prompt)
     parts = resp.content.strip().lower().split()
     intent = parts[0] if parts else "chat"
-    if intent not in ("chat", "report", "travel", "assistant"):
+    if intent not in ("chat", "travel", "assistant"):
         intent = "chat"
     output_format = parts[1] if len(parts) > 1 and parts[1] != "none" else None
 

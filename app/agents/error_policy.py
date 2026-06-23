@@ -35,7 +35,7 @@ LONG_TIMEOUT = 120                             # 长输出/慢节点超时(秒)
 SUBGRAPH_TIMEOUT = 600                         # 整个子图作为主图节点的宽松上限(秒)
 
 # 子图 wrapper 节点：内部 handler 已记录真实失败节点，避免在主图层重复入库
-_SUBGRAPH_WRAPPERS = {"report_agent", "travel_agent", "assistant_agent"}
+_SUBGRAPH_WRAPPERS = {"travel_agent", "assistant_agent"}
 
 
 async def log_and_raise(state, error: NodeError):

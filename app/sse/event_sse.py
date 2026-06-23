@@ -10,14 +10,13 @@ from loguru import logger as _log
 _CST = timezone(timedelta(hours=8))
 
 INTENT_LABELS: dict[str, str] = {
-    "chat": "聊天", "report": "报表", "travel": "旅游", "assistant": "助手",
+    "chat": "聊天", "travel": "旅游", "assistant": "助手",
 }
 
 NODE_LABELS: dict[str, str] = {
     # 主流程节点
     "memory_recall":              "记忆召回",
     "dispatcher":                 "意图识别",
-    "report_agent":               "报表生成",
     "travel_agent":               "旅游规划",
     "assistant_agent":            "智能助手",
     "chat_agent":                 "对话聊天",
@@ -30,14 +29,6 @@ NODE_LABELS: dict[str, str] = {
     "query_weather":              "天气查询",
     "query_route":                "路线查询",
     "generate_plan":              "行程生成",
-    # 数据分析子图-内部节点
-    "collect_task":               "任务收集",
-    "activate_skill":             "技能激活",
-    "tool_router":                "工具路由",
-    "planner":                    "分析思考",
-    "tool_executor":              "工具执行",
-    "tool_manager":               "工具管理",
-    "report_generator":           "报告生成",
     # 综合助手子图-内部节点
     "assistant_collect_task":     "任务收集",
     "assistant_triage":           "任务分析",
@@ -58,14 +49,6 @@ SUB_NODE_PARENT: dict[str, str] = {
     "query_weather":              "旅游规划",
     "query_route":                "旅游规划",
     "generate_plan":              "旅游规划",
-    # 数据分析子图：子级 --> 父级
-    "collect_task":               "报表生成",
-    "activate_skill":             "报表生成",
-    "tool_router":                "报表生成",
-    "planner":                    "报表生成",
-    "tool_executor":              "报表生成",
-    "tool_manager":               "报表生成",
-    "report_generator":           "报表生成",
     # 综合助手子图：子级 --> 父级
     "assistant_collect_task":     "智能助手",
     "assistant_triage":           "智能助手",
@@ -79,11 +62,11 @@ SUB_NODE_PARENT: dict[str, str] = {
 
 # 流式输出结果到主回复的节点（token → 正文）
 STREAM_NODES = {"chat_agent", "document_agent",
-                "generate_plan", "report_generator", "assistant_answer_generator"}
+                "generate_plan", "assistant_answer_generator"}
 
 # 思考型节点：LLM 流式输出作为「思考」附属条目展示（thinking / thinking_token）
 THINKING_NODES = {
-    "collect_params", "activate_skill", "planner",
+    "collect_params",
     "assistant_triage", "assistant_activate_skill", "assistant_planner",
 }
 
@@ -129,7 +112,6 @@ class _ParseState:
 
 # ReAct 循环节点（每轮重复出现，靠 react_round 字段区分，不在名称上加 #n）
 _REACT_NODES = {
-    "planner", "tool_executor",
     "assistant_planner", "assistant_tool_executor",
 }
 

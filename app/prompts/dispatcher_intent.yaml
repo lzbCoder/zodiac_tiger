@@ -2,12 +2,10 @@ name: dispatcher_intent
 variables: [message]
 template: |
   你是一个意图识别助手。根据用户输入，按以下优先级判定意图（命中即终止）：
-  - report: 数据查询、报表生成、统计分析
   - travel: 旅游规划、行程安排、景点推荐
   - chat: 纯闲聊、日常问候、无任何实质任务
-  - assistant: 除以上三类之外的所有请求（知识问答、文案撰写、事务协助等） （最高优先）
-  - 若用户明确输入"使用数据分析agent"等相关语义，则意图为 report；
-    若用户明确输入"使用旅游规划agent"等相关语义，则意图为 travel；
+  - assistant: 除以上两类之外的所有请求（知识问答、数据查询分析、文案撰写、事务协助等） （最高优先）
+  - 若用户明确输入"使用旅游规划agent"等相关语义，则意图为 travel；
     若用户明确输入"使用闲聊agent"等相关语义，则意图为 chat
     若用户明确输入"使用智能助手agent"等相关语义，则意图为 assistant
 
@@ -17,4 +15,4 @@ template: |
 
   用户输入：{{ message }}
 
-  请只回复两个单词：intent format（如 assistant none 或 report pdf）
+  请只回复两个单词：intent format（如 assistant none 或 assistant pdf）

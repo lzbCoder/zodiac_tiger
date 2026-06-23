@@ -93,9 +93,8 @@ CREATE TABLE IF NOT EXISTS root.intent_display_config (
 INSERT INTO root.intent_display_config (intent_key, show_name, intent_desc, demo_input, icon, sort, enable)
 VALUES
     ('travel', '🗺️ 智能旅游规划', '自定义出行人数、预算、游玩天数、出发与目的城市，自动结合天气、路线规划完整行程，支持导出PDF/Word文档', '2个人从郑州出发去青岛玩4天，预算6000元，帮我规划详细行程并生成文档', 'map', 1, 1),
-    ('report', '📊 智能数据分析报表', '上传Excel、CSV数据文件，自动完成数据清洗、统计研判、图表生成、问题分析，输出专业报告并导出文件', '分析上传的销售表格，找出近3个月销量下滑原因，生成Word报告', 'chart', 2, 1),
     ('chat', '💬 通用智能问答', '支持文案写作、公文撰写、知识查询、思路梳理、日常咨询等全场景通用对话', '帮我写一份简洁的月度工作小结', 'chat', 3, 1),
-    ('assistant', '🤖 综合智能助手', '处理报表、旅游之外的各类问答、文案撰写、知识咨询、事务协助等综合需求', '帮我梳理一份工作思路 / 解释一下分布式概念', 'assistant', 4, 1)
+    ('assistant', '🤖 综合智能助手', '处理数据分析、文案撰写、知识咨询、事务协助等各类综合需求（含Excel/CSV数据分析）', '分析上传的销售表格，找出近3个月销量下滑原因 / 解释一下分布式概念', 'assistant', 4, 1)
 ON CONFLICT (intent_key) DO NOTHING;
 CREATE TABLE IF NOT EXISTS root.file_info (
     id              BIGSERIAL PRIMARY KEY,
