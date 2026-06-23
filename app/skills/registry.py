@@ -12,6 +12,17 @@ SKILL_CACHE_KEY = "skill:all"
 SKILL_KEY_PREFIX = "skill:"
 
 
+def parse_allowed_tools(bind_tools: str | None) -> list[str]:
+    """将 skill_md_meta.bind_tools（allowed-tools 的 JSON 文本）解析为工具名列表。"""
+    if not bind_tools:
+        return []
+    try:
+        data = json.loads(bind_tools)
+        return [str(x) for x in data] if isinstance(data, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
 def build_skill_xml(skill_key: str, body: str, folder_path: str) -> str:
     """将 SKILL.md 正文包装为 XML 格式，附加技能目录路径和资源文件列表。"""
     skill_dir = Path(folder_path)
@@ -69,6 +80,7 @@ class SkillRegistry:
                     SkillInfo.folder_abs_path,
                     SkillInfo.enable_status,
                     SkillMdMeta.system_prompt,
+                    SkillMdMeta.bind_tools,
                 )
                 .outerjoin(SkillMdMeta, SkillMdMeta.skill_key == SkillInfo.skill_key)
                 .where(SkillInfo.enable_status == 1)
@@ -87,6 +99,7 @@ class SkillRegistry:
                     "skill_desc": row.skill_desc or "",
                     "skill_body": body,
                     "skill_xml_body": xml_body,
+                    "allowed_tools": parse_allowed_tools(row.bind_tools),
                 }, ensure_ascii=False),
             )
             skill_list.append({

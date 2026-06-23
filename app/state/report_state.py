@@ -20,6 +20,12 @@ class ReportState(AgentState):
     react_loop_count: int = 0
     """ReAct 思考-行动循环的迭代次数计数器。"""
 
+    activated_tool_names: NotRequired[list[str]]
+    """工具路由节点选出的工具名；工具管理节点会追加；planner 据此筛选 bind_tools。"""
+
+    tool_search_exhausted: bool = False
+    """工具管理在池中找不到所缺工具时置 True，防止"缺能力→管理→仍缺"死循环。"""
+
     final_report: NotRequired[str]
     """生成的最终数据分析报告内容。"""
 

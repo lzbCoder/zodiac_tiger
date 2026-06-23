@@ -33,15 +33,19 @@ NODE_LABELS: dict[str, str] = {
     # 数据分析子图-内部节点
     "collect_task":               "任务收集",
     "activate_skill":             "技能激活",
+    "tool_router":                "工具路由",
     "planner":                    "分析思考",
     "tool_executor":              "工具执行",
+    "tool_manager":               "工具管理",
     "report_generator":           "报告生成",
     # 综合助手子图-内部节点
     "assistant_collect_task":     "任务收集",
     "assistant_triage":           "任务分析",
     "assistant_activate_skill":   "技能激活",
+    "assistant_tool_router":      "工具路由",
     "assistant_planner":          "分析思考",
     "assistant_tool_executor":    "工具执行",
+    "assistant_tool_manager":     "工具管理",
     "assistant_answer_generator": "回答生成",
 }
 
@@ -57,15 +61,19 @@ SUB_NODE_PARENT: dict[str, str] = {
     # 数据分析子图：子级 --> 父级
     "collect_task":               "报表生成",
     "activate_skill":             "报表生成",
+    "tool_router":                "报表生成",
     "planner":                    "报表生成",
     "tool_executor":              "报表生成",
+    "tool_manager":               "报表生成",
     "report_generator":           "报表生成",
     # 综合助手子图：子级 --> 父级
     "assistant_collect_task":     "智能助手",
     "assistant_triage":           "智能助手",
     "assistant_activate_skill":   "智能助手",
+    "assistant_tool_router":      "智能助手",
     "assistant_planner":          "智能助手",
     "assistant_tool_executor":    "智能助手",
+    "assistant_tool_manager":     "智能助手",
     "assistant_answer_generator": "智能助手",
 }
 
@@ -197,6 +205,15 @@ def _build_chain_end_meta(name: str, output: dict, state: _ParseState) -> tuple[
         detail = output.get("extracted_detail", "")
         if detail:
             meta_dict["detail"] = detail
+    elif name in ("tool_router", "assistant_tool_router"):
+        names = output.get("activated_tool_names", [])
+        meta_dict["detail"] = f"已选择工具：{', '.join(names) if names else '无'}"
+    elif name in ("tool_manager", "assistant_tool_manager"):
+        if output.get("tool_search_exhausted"):
+            meta_dict["detail"] = "未找到相关工具，转为基于现有能力作答"
+        else:
+            names = output.get("activated_tool_names", [])
+            meta_dict["detail"] = f"已补充工具，当前可用：{', '.join(names) if names else '无'}"
     elif name in _REACT_NODES:
         # 用 None 哨兵区分"未记录"与合法的 0 值，避免 or 链将 0 误判为无效
         rnd = state.react_rounds.pop(name, None)

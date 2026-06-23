@@ -16,10 +16,15 @@ from app.prompts.loader import render, render_messages
 from app.skills.registry import SkillRegistry
 from app.state.report_state import ReportState
 from app.tools.report_tools import REPORT_TOOLS
-from app.agents.agent_utils import astream_accumulate, astream_tool_call
+from app.tools.meta_tools import request_tools
+from app.agents.agent_utils import (
+    astream_accumulate, astream_tool_call, build_tool_candidates, parse_tool_names,
+)
 from app.agents.error_policy import (
     DEFAULT_RETRY, NO_RETRY, log_and_raise, DEFAULT_TIMEOUT, LONG_TIMEOUT,
 )
+
+_REQUEST_TOOLS_NAME = "request_tools"
 
 from sqlalchemy import select
 
@@ -32,7 +37,7 @@ def _compile_skills(xml_bodies: list[str]) -> str:
 
 
 async def _collect_tools(enable_search: bool) -> dict:
-    """合并静态工具与 MCP 动态工具，返回 name → tool 映射。"""
+    """合并静态工具与 MCP 动态工具，返回 name → tool 映射（dict 天然按名去重）。"""
     static_tools = {
         t.name: t for t in REPORT_TOOLS
         if t.name != "web_search" or enable_search
@@ -42,6 +47,16 @@ async def _collect_tools(enable_search: bool) -> dict:
     except Exception:
         mcp_tools = {}
     return {**static_tools, **mcp_tools}
+
+
+async def _collect_allowed_names(activated_skill_keys: list[str]) -> set[str]:
+    """汇总已激活技能 allowed-tools 的工具名集合（来自 Redis 技能缓存，去重）。"""
+    names: set[str] = set()
+    for key in activated_skill_keys or []:
+        data = await SkillRegistry.get_skill(key)
+        if data:
+            names.update(data.get("allowed_tools", []) or [])
+    return names
 
 
 # ---- 节点 1：任务收集 ----
@@ -54,10 +69,12 @@ async def collect_task_node(state: ReportState, config: RunnableConfig) -> dict:
             break
     return {
         "task": user_msg,
-        "scratchpad": [HumanMessage(content=user_msg)],  # 每轮重置 ReAct 草稿
+        "scratchpad": [HumanMessage(content=user_msg)],  # 每次任务重置 ReAct 草稿
         "react_loop_count": 0,
         "skill_context": "",
         "activated_skill_keys": [],
+        "activated_tool_names": [],
+        "tool_search_exhausted": False,
     }
 
 
@@ -117,6 +134,31 @@ async def activate_skill_node(state: ReportState, config: RunnableConfig) -> dic
     }
 
 
+# ---- 节点 2.5：工具路由（从工具池按需筛选） ----
+
+async def tool_router_node(state: ReportState, config: RunnableConfig) -> dict:
+    """把工具池(名+描述)和任务给 LLM，选出所需工具 → activated_tool_names。"""
+    enable_search = config["configurable"].get("enable_search", False)
+    pool = await _collect_tools(enable_search)
+    if not pool:
+        return {"activated_tool_names": []}
+
+    allowed = await _collect_allowed_names(state.get("activated_skill_keys", []))
+    preferred = "、".join(n for n in allowed if n in pool) or "（无）"
+
+    messages = render_messages(
+        "tool_router",
+        task=state.get("task", ""),
+        candidates=build_tool_candidates(pool),
+        preferred=preferred,
+    )
+    llm = create_llm(settings.INTENT_MODEL, streaming=True)
+    content = await astream_accumulate(llm, messages)
+    selected = [n for n in parse_tool_names(content) if n in pool]
+
+    return {"activated_tool_names": selected}
+
+
 # ---- 节点 3：Planner（原生 FC 决策，流式推理） ----
 
 async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
@@ -124,11 +166,12 @@ async def planner_node(state: ReportState, config: RunnableConfig) -> dict:
     loop = state.get("react_loop_count", 0)
     scratchpad = list(state.get("scratchpad", []))
 
-    tool_map = await _collect_tools(enable_search)
+    pool = await _collect_tools(enable_search)
+    activated = state.get("activated_tool_names", []) or []
+    # 仅绑定路由/管理选出的工具子集 + request_tools 元工具（让模型可申请补充能力）
+    bound = [pool[n] for n in activated if n in pool] + [request_tools]
 
-    llm = create_llm(settings.CHAT_MODEL, streaming=True)
-    if tool_map:
-        llm = llm.bind_tools(list(tool_map.values()))
+    llm = create_llm(settings.CHAT_MODEL, streaming=True).bind_tools(bound)
 
     system_msgs = render_messages(
         "report_planner",
@@ -156,6 +199,9 @@ async def tool_executor_node(state: ReportState, config: RunnableConfig) -> dict
         return {"scratchpad": scratchpad}
 
     tool_map = await _collect_tools(enable_search)
+    real_calls = [tc for tc in tool_calls if tc.get("name") != _REQUEST_TOOLS_NAME]
+    if not real_calls:
+        return {"scratchpad": scratchpad}
 
     async def _run_one(tc: dict) -> ToolMessage:
         name = tc.get("name", "")
@@ -170,8 +216,53 @@ async def tool_executor_node(state: ReportState, config: RunnableConfig) -> dict
         except Exception as e:
             return ToolMessage(content=f"工具执行失败: {e}", tool_call_id=call_id, name=name)
 
-    tool_messages = await asyncio.gather(*[_run_one(tc) for tc in tool_calls])
+    tool_messages = await asyncio.gather(*[_run_one(tc) for tc in real_calls])
     return {"scratchpad": scratchpad + list(tool_messages)}
+
+
+# ---- 节点 4.5：工具管理（按需从池中补齐缺失能力的工具） ----
+
+def _find_request_tools_call(scratchpad: list) -> dict | None:
+    """取 scratchpad 末条 AIMessage 中的 request_tools 调用。"""
+    last = scratchpad[-1] if scratchpad else None
+    for tc in getattr(last, "tool_calls", None) or []:
+        if tc.get("name") == _REQUEST_TOOLS_NAME:
+            return tc
+    return None
+
+
+async def tool_manager_node(state: ReportState, config: RunnableConfig) -> dict:
+    """planner 申请补充工具时：按能力描述从池中匹配，加入 activated_tool_names，并回填 ToolMessage。"""
+    enable_search = config["configurable"].get("enable_search", False)
+    scratchpad = list(state.get("scratchpad", []))
+    req = _find_request_tools_call(scratchpad)
+    call_id = (req or {}).get("id", "")
+    capability = (req or {}).get("args", {}).get("capability", "")
+
+    pool = await _collect_tools(enable_search)
+    activated = list(state.get("activated_tool_names", []) or [])
+    candidates = {n: t for n, t in pool.items() if n not in activated}
+
+    found: list[str] = []
+    if candidates and capability:
+        messages = render_messages(
+            "tool_manager", capability=capability, candidates=build_tool_candidates(candidates),
+        )
+        llm = create_llm(settings.INTENT_MODEL, streaming=True)
+        content = await astream_accumulate(llm, messages)
+        found = [n for n in parse_tool_names(content) if n in candidates]
+
+    if found:
+        note = f"已加入工具: {', '.join(found)}"
+        return {
+            "activated_tool_names": activated + found,
+            "scratchpad": scratchpad + [ToolMessage(content=note, tool_call_id=call_id, name=_REQUEST_TOOLS_NAME)],
+        }
+    note = "未找到相关工具，请基于现有能力作答"
+    return {
+        "tool_search_exhausted": True,
+        "scratchpad": scratchpad + [ToolMessage(content=note, tool_call_id=call_id, name=_REQUEST_TOOLS_NAME)],
+    }
 
 
 # ---- 节点 5：报告生成 ----
@@ -205,13 +296,21 @@ async def report_generator_node(state: ReportState, config: RunnableConfig) -> d
 # ---- 路由 ----
 
 def route_after_planner(state: ReportState) -> str:
-    """planner 决策后：有 tool_calls 且未超上限 → 执行工具；否则 → 生成报告。"""
+    """planner 决策后路由：
+    - 申请补充工具(request_tools) 且未耗尽 → tool_manager
+    - 有真实工具调用 且未超上限 → tool_executor
+    - 其余（无 tool_calls / 已耗尽 / 超上限）→ report_generator
+    """
     scratchpad = state.get("scratchpad", [])
     last = scratchpad[-1] if scratchpad else None
-    has_tool_calls = bool(getattr(last, "tool_calls", None))
-    if has_tool_calls and state.get("react_loop_count", 0) < _MAX_LOOPS:
-        return "tool_executor"
-    return "report_generator"
+    tool_calls = getattr(last, "tool_calls", None) or []
+    if not tool_calls or state.get("react_loop_count", 0) >= _MAX_LOOPS:
+        return "report_generator"
+
+    names = {tc.get("name") for tc in tool_calls}
+    if _REQUEST_TOOLS_NAME in names:
+        return "report_generator" if state.get("tool_search_exhausted", False) else "tool_manager"
+    return "tool_executor"
 
 
 # ---- 构建子图 ----
@@ -223,20 +322,25 @@ def build_report_subgraph() -> StateGraph:
 
     sub.add_node("collect_task",     collect_task_node)
     sub.add_node("activate_skill",   activate_skill_node)
+    sub.add_node("tool_router",      tool_router_node)
     sub.add_node("planner",          planner_node)
     sub.add_node("tool_executor",    tool_executor_node, retry_policy=NO_RETRY)  # 调工具，不重试整节点
+    sub.add_node("tool_manager",     tool_manager_node)
     sub.add_node("report_generator", report_generator_node, timeout=LONG_TIMEOUT)
 
     sub.set_entry_point("collect_task")
     sub.add_edge("collect_task",   "activate_skill")
-    sub.add_edge("activate_skill", "planner")
+    sub.add_edge("activate_skill", "tool_router")
+    sub.add_edge("tool_router",    "planner")
 
     sub.add_conditional_edges("planner", route_after_planner, {
         "tool_executor":    "tool_executor",
+        "tool_manager":     "tool_manager",
         "report_generator": "report_generator",
     })
 
     sub.add_edge("tool_executor", "planner")   # ToolMessage 回填后回到 planner
+    sub.add_edge("tool_manager",  "planner")   # 补齐工具后回到 planner
     sub.add_edge("report_generator", END)
 
     return sub.compile()

@@ -1,5 +1,6 @@
 """Agent 子图共享工具函数"""
 
+import json
 from langchain_core.tools import BaseTool
 from langchain_core.messages import AIMessage, BaseMessage
 
@@ -65,3 +66,25 @@ def build_tool_desc_section(tools: dict[str, BaseTool]) -> str:
         for name, t in tools.items()
     )
     return f"\n可用工具：\n{lines}"
+
+
+def build_tool_candidates(tool_map: dict[str, BaseTool]) -> str:
+    """渲染候选工具清单（名称：描述，每行一个），供工具路由/工具管理节点选择。"""
+    if not tool_map:
+        return "（无可用工具）"
+    return "\n".join(
+        f"- {name}：{getattr(t, 'description', '') or ''}" for name, t in tool_map.items()
+    )
+
+
+def parse_tool_names(content: str) -> list[str]:
+    """解析 LLM 返回的 {"tool_names": [...]} JSON，容错代码块包裹。"""
+    try:
+        text = content.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        data = json.loads(text)
+        names = data.get("tool_names", []) if isinstance(data, dict) else []
+        return [str(n) for n in names]
+    except (json.JSONDecodeError, AttributeError, IndexError):
+        return []

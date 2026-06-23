@@ -15,7 +15,7 @@ from app.db.session import get_db_session
 from app.models.skill_info import SkillInfo
 from app.models.skill_md_meta import SkillMdMeta
 from app.models.agent_skill_rel import AgentSkillRel
-from app.skills.registry import SkillRegistry, build_skill_xml
+from app.skills.registry import SkillRegistry, build_skill_xml, parse_allowed_tools
 
 
 async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_desc: str | None) -> dict:
@@ -111,6 +111,7 @@ async def upload_skill(file_bytes: bytes, filename: str, skill_name: str, skill_
             "skill_desc": md_desc,
             "skill_body": disk_body,
             "skill_xml_body": skill_xml_body,
+            "allowed_tools": allowed_tools if isinstance(allowed_tools, list) else [],
         })
 
         logger.info(f"[Skill] 上传成功: {skill_key} → {folder_abs_path}")
@@ -163,18 +164,19 @@ async def toggle_enable(skill_key: str, enable_status: int) -> None:
                 .where(SkillInfo.skill_key == skill_key)
             )).one_or_none()
             meta_row = (await session.execute(
-                select(SkillMdMeta.system_prompt)
+                select(SkillMdMeta.system_prompt, SkillMdMeta.bind_tools)
                 .where(SkillMdMeta.skill_key == skill_key)
-            )).scalar_one_or_none()
+            )).one_or_none()
 
         if row:
-            body = meta_row or ""
+            body = (meta_row.system_prompt if meta_row else "") or ""
             xml_body = build_skill_xml(skill_key, body, row.folder_abs_path)
             await SkillRegistry.write_skill(skill_key, {
                 "skill_key": skill_key,
                 "skill_desc": row.skill_desc or "",
                 "skill_body": body,
                 "skill_xml_body": xml_body,
+                "allowed_tools": parse_allowed_tools(meta_row.bind_tools if meta_row else None),
             })
 
 
