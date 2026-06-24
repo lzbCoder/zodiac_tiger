@@ -107,33 +107,10 @@ async def artifact_export_node(state: AssistantState, config: RunnableConfig) ->
     return {"generate_format": "none", "messages": [{"role": "ai", "content": note}]}
 
 
-# ---- 节点 2：Triage（任务复杂度判定，一次性节点，保持单字符串） ----
-
-async def triage_node(state: AssistantState, config: RunnableConfig) -> dict:
-    """任务分析：单次 LLM 调用判定任务复杂度（simple / complex）。流式展示为「思考」条目。"""
-    task = state.get("task", "")
-    if len(task) < 20:
-        return {"complexity": "simple"}
-
-    prompt = render("assistant_triage", task=task)
-    llm = create_llm(settings.INTENT_MODEL, streaming=True)
-    content = await astream_accumulate(llm, prompt)
-    try:
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        complexity = json.loads(text).get("complexity", "simple")
-    except (json.JSONDecodeError, IndexError):
-        logger.warning(f"[assistant] Triage JSON 解析失败: {content[:200]}")
-        complexity = "simple"
-
-    return {"complexity": complexity if complexity == "complex" else "simple"}
-
-
-# ---- 节点 2.5：技能激活（一次性节点，保持单字符串） ----
+# ---- 节点 2：技能激活（一次性节点，保持单字符串） ----
 
 async def activate_skill_node(state: AssistantState, config: RunnableConfig) -> dict:
-    """查询助手 Agent 绑定的技能目录，LLM 结合任务和 triage 结果筛选，从 Redis 获取激活内容。"""
+    """查询助手 Agent 绑定的技能目录，LLM 结合任务筛选，从 Redis 获取激活内容。"""
     async with get_db_session() as session:
         rows = (await session.execute(
             select(AgentSkillRel.skill_key, AgentSkillRel.skill_desc)
@@ -146,12 +123,10 @@ async def activate_skill_node(state: AssistantState, config: RunnableConfig) -> 
     catalog = [{"skill_key": r.skill_key, "skill_desc": r.skill_desc or ""} for r in rows]
     catalog_text = "\n".join(f"- {c['skill_key']}：{c['skill_desc']}" for c in catalog)
 
-    triage_summary = f"任务复杂度：{state.get('complexity', 'simple')}"
     prompt = render(
         "skill_activate",
         task=state.get("task", ""),
         catalog_text=catalog_text,
-        triage_summary=triage_summary,
     )
     llm = create_llm(settings.INTENT_MODEL, streaming=True)
     content = await astream_accumulate(llm, prompt)
@@ -384,7 +359,7 @@ def route_after_collect(state: AssistantState) -> str:
     fmt = (state.get("generate_format", "") or "").lower().strip()
     if state.get("task_action") == "ARTIFACT_OPERATION" and fmt in _REAL_DOC_FORMATS:
         return "assistant_artifact_export"
-    return "assistant_triage"
+    return "assistant_activate_skill"
 
 
 def route_after_planner(state: AssistantState) -> str:
@@ -414,7 +389,6 @@ def build_assistant_agent() -> StateGraph:
 
     sub.add_node("assistant_collect_task",     collect_task_node)
     sub.add_node("assistant_artifact_export",  artifact_export_node)
-    sub.add_node("assistant_triage",           triage_node)
     sub.add_node("assistant_activate_skill",   activate_skill_node)
     sub.add_node("assistant_tool_router",      tool_router_node)
     sub.add_node("assistant_planner",          planner_node)
@@ -424,11 +398,10 @@ def build_assistant_agent() -> StateGraph:
 
     sub.set_entry_point("assistant_collect_task")
     sub.add_conditional_edges("assistant_collect_task", route_after_collect, {
-        "assistant_artifact_export": "assistant_artifact_export",
-        "assistant_triage":          "assistant_triage",
+        "assistant_artifact_export":   "assistant_artifact_export",
+        "assistant_activate_skill":    "assistant_activate_skill",
     })
     sub.add_edge("assistant_artifact_export", END)   # 导出后交父图 route_by_format → document_agent
-    sub.add_edge("assistant_triage",         "assistant_activate_skill")
     sub.add_edge("assistant_activate_skill", "assistant_tool_router")
     sub.add_edge("assistant_tool_router",    "assistant_planner")
 

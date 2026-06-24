@@ -12,9 +12,6 @@ class AssistantState(AgentState):
     task: NotRequired[str]
     """当前需要处理的用户任务描述。"""
 
-    complexity: NotRequired[str]
-    """任务复杂度判定：simple（直接执行）| complex（先规划再分步执行）。"""
-
     scratchpad: NotRequired[list[AnyMessage]]
     """ReAct 草稿消息通道（Human/AI(tool_calls)/Tool），每轮任务由 collect_task 重置。
     与 durable messages（仅存用户提问+最终AI回复）分离，避免工具噪音污染对话记忆。"""

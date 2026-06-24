@@ -34,7 +34,6 @@ NODE_LABELS: dict[str, str] = {
     # 综合助手子图-内部节点
     "assistant_collect_task":     "任务收集",
     "assistant_artifact_export":  "产物导出",
-    "assistant_triage":           "任务分析",
     "assistant_activate_skill":   "技能激活",
     "assistant_tool_router":      "工具路由",
     "assistant_planner":          "分析思考",
@@ -55,7 +54,6 @@ SUB_NODE_PARENT: dict[str, str] = {
     # 综合助手子图：子级 --> 父级
     "assistant_collect_task":     "智能助手",
     "assistant_artifact_export":  "智能助手",
-    "assistant_triage":           "智能助手",
     "assistant_activate_skill":   "智能助手",
     "assistant_tool_router":      "智能助手",
     "assistant_planner":          "智能助手",
@@ -71,7 +69,7 @@ STREAM_NODES = {"chat_agent", "document_agent",
 # 思考型节点：LLM 流式输出作为「思考」附属条目展示（thinking / thinking_token）
 THINKING_NODES = {
     "collect_params",
-    "assistant_triage", "assistant_activate_skill", "assistant_planner",
+    "assistant_activate_skill", "assistant_planner",
 }
 
 

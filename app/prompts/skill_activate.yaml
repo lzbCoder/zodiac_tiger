@@ -1,8 +1,7 @@
 template: |
   你是技能选择专家。根据当前任务和可用技能目录，判断需要激活哪些技能。
 
-  当前任务：{{ task }}{% if triage_summary %}
-  任务复杂度分析：{{ triage_summary }}{% endif %}
+  当前任务：{{ task }}
 
   可用技能目录：
   {{ catalog_text }}
