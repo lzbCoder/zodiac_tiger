@@ -57,6 +57,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Redis 初始化失败: {e}")
 
+    # 日志配置：从 Redis 恢复持久化的级别/切割/保留设置（无则用默认）
+    try:
+        redis_client = await get_redis()
+        stored = await redis_client.get("config:log")
+        if stored:
+            import json
+            from app.utils.logger import reconfigure_logging
+            data = json.loads(stored)
+            reconfigure_logging(
+                level=data.get("level"),
+                rotation_mb=data.get("rotation_mb"),
+                retention_days=data.get("retention_days"),
+            )
+    except Exception as e:
+        logger.warning(f"日志配置恢复失败: {e}")
+
     # LangSmith 初始化：优先读 Redis 缓存，回退到 .env
     try:
         redis_client = await get_redis()
