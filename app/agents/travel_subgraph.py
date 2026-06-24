@@ -13,6 +13,7 @@ from app.agents.agent_utils import astream_accumulate
 from app.agents.error_policy import (
     DEFAULT_RETRY, NO_RETRY, log_and_raise, DEFAULT_TIMEOUT, LONG_TIMEOUT,
 )
+from app.agents.task_context import build_task_context
 
 # 必填参数
 _REQUIRED = ["traveler_count", "budget", "days", "origin", "destination"]
@@ -23,6 +24,15 @@ _LABELS = {
     "origin": "出发城市",
     "destination": "目的城市",
 }
+
+
+# ---- 节点：任务加载（入口，加载本任务已有行程上下文） ----
+
+async def prepare_context_node(state: TravelState, config: RunnableConfig) -> dict:
+    """加载本任务已有行程进展 → task_context。
+    NEW_TASK 直接返回 ""（不查库）；续写/切换/产物改写时取最新行程产物原文。"""
+    task_context = await build_task_context(state, config)
+    return {"task_context": task_context}
 
 
 # ---- 节点：参数提取 ----
@@ -160,6 +170,42 @@ async def generate_plan_node(state: TravelState, config: RunnableConfig) -> dict
     }
 
 
+# ---- 节点：行程精修（续写/改写，基于已有行程增量修改，不重查高德） ----
+
+async def refine_plan_node(state: TravelState, config: RunnableConfig) -> dict:
+    """在已有行程基础上按用户新要求增量修改。绕过提参/校验/高德查询。
+
+    不重新查询地理/天气/路线；改目的地等极端场景由 prompt 提示用户新建兜底。
+    """
+    prior_plan = state.get("task_context", "")
+
+    user_msg = ""
+    for m in reversed(state.get("messages", [])):
+        if hasattr(m, "type") and m.type == "human":
+            user_msg = m.content
+            break
+
+    llm = create_llm(settings.CHAT_MODEL, streaming=True)
+    prompt = render("travel_refine_plan", prior_plan=prior_plan, user_msg=user_msg)
+
+    enable_search = config["configurable"].get("enable_search", False)
+    if enable_search:
+        from app.tools.executor import run_with_tools
+        prompt += "\n（请使用 web_search 搜索用户问题，搜索结果中的信息优先级高于对话历史。即使对话历史中有不同信息，也必须以搜索结果为准。）"
+        resp_content = await run_with_tools(llm, prompt)
+    else:
+        resp_content = ""
+        async for chunk in llm.astream(prompt):
+            if chunk.content:
+                resp_content += chunk.content
+
+    return {
+        "travel_plan": resp_content,
+        "generate_content": resp_content,
+        "messages": [{"role": "ai", "content": resp_content}],
+    }
+
+
 # ---- 构建 SubGraph ----
 
 def _all_params_filled(state: TravelState) -> str:
@@ -169,11 +215,20 @@ def _all_params_filled(state: TravelState) -> str:
     return "query_geo"
 
 
+def route_travel_entry(state: TravelState) -> str:
+    """入口路由：续写/切换/产物改写且查到已有行程 → 精修（绕过提参与高德）；
+    其余（新任务，或虽续写但查无历史行程）→ 正常完整规划。"""
+    if state.get("task_action") != "NEW_TASK" and state.get("task_context"):
+        return "refine_plan"
+    return "collect_params"
+
+
 def build_travel_subgraph() -> StateGraph:
     sub = StateGraph(TravelState)
     sub.set_node_defaults(
         retry_policy=DEFAULT_RETRY, error_handler=log_and_raise, timeout=DEFAULT_TIMEOUT)
 
+    sub.add_node("prepare_context", prepare_context_node)
     sub.add_node("collect_params", collect_params_node)
     sub.add_node("validate_params", validate_params_node)
     # 高德查询节点：失败不重试（外部接口由其自身/工具层兜底）
@@ -181,8 +236,13 @@ def build_travel_subgraph() -> StateGraph:
     sub.add_node("query_weather", query_weather_node, retry_policy=NO_RETRY)
     sub.add_node("query_route", query_route_node, retry_policy=NO_RETRY)
     sub.add_node("generate_plan", generate_plan_node, timeout=LONG_TIMEOUT)
+    sub.add_node("refine_plan", refine_plan_node, timeout=LONG_TIMEOUT)
 
-    sub.set_entry_point("collect_params")
+    sub.set_entry_point("prepare_context")
+    sub.add_conditional_edges("prepare_context", route_travel_entry, {
+        "collect_params": "collect_params",
+        "refine_plan":    "refine_plan",
+    })
     sub.add_edge("collect_params", "validate_params")
     sub.add_conditional_edges("validate_params", _all_params_filled, {
         "validate_params": "validate_params",
@@ -192,5 +252,6 @@ def build_travel_subgraph() -> StateGraph:
     sub.add_edge("query_weather", "query_route")
     sub.add_edge("query_route", "generate_plan")
     sub.add_edge("generate_plan", END)
+    sub.add_edge("refine_plan", END)
 
     return sub.compile()

@@ -35,3 +35,6 @@ class TravelState(AgentState):
 
     travel_plan: NotRequired[str]
     """生成的完整旅行计划内容。"""
+
+    task_context: NotRequired[str]
+    """本任务已有行程上下文（CONTINUE/SWITCH/产物改写时注入），prepare_context 写入、refine_plan 读取。"""

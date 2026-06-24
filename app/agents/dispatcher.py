@@ -19,6 +19,15 @@ async def dispatcher_node(state: AgentState, config: RunnableConfig) -> dict:
     # 意图识别（调用 LLM）→ intent + format
     intent, output_format = await _detect_intent(user_message, state)
 
+    # ARTIFACT_OPERATION（改已有产物）→ 硬路由回产出它的 agent（focus task_type），
+    # 修复"改行程参数重规划被误判 assistant"；仅覆盖 intent，format 仍按本轮检测。
+    # 仅限"操作产物"这一窄动作，CONTINUE/SWITCH 不绑，保留"一任务多 agent"。
+    if state.get("task_action") == "ARTIFACT_OPERATION":
+        task_type = state.get("active_task_type", "")
+        if task_type in ("chat", "travel", "assistant") and task_type != intent:
+            logger.info(f"[调度] ARTIFACT_OPERATION 按 task_type 硬路由 intent: {intent} → {task_type}")
+            intent = task_type
+
     # 模糊提问检测（"能干什么"等兜底引导）
     fuzzy_keywords = ["能干什么", "能做什么", "有什么功能", "你能做什么", "你会什么",
                       "有什么能力", "介绍一下", "你能干嘛", "试试", "test"]

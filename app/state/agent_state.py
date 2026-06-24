@@ -39,6 +39,9 @@ class AgentState(MessagesState):
     task_action: NotRequired[str]
     """本轮任务动作：NEW_TASK / CONTINUE_TASK / SWITCH_TASK / ARTIFACT_OPERATION。task_manager 写入。"""
 
+    active_task_type: NotRequired[str]
+    """焦点任务类型 chat/travel/assistant。task_manager 写入；dispatcher 在 ARTIFACT_OPERATION 轮据此硬路由 intent，使"改产物"回到产出它的 agent。"""
+
     current_artifact_id: NotRequired[str]
     """当前任务最新产物 id。task_manager 读出、artifact_store 产生新版本后更新。"""
 

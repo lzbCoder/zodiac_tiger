@@ -25,12 +25,14 @@ NODE_LABELS: dict[str, str] = {
     "artifact_store":             "产物存储",
     "memory_extraction":          "记忆提取",
     # 旅游规划子图-内部节点
+    "prepare_context":            "任务加载",
     "collect_params":             "参数提取",
     "validate_params":            "参数校验",
     "query_geo":                  "地理编码",
     "query_weather":              "天气查询",
     "query_route":                "路线查询",
     "generate_plan":              "行程生成",
+    "refine_plan":                "行程精修",
     # 综合助手子图-内部节点
     "assistant_collect_task":     "任务收集",
     "assistant_artifact_export":  "产物导出",
@@ -45,12 +47,14 @@ NODE_LABELS: dict[str, str] = {
 # 子图节点 → 父节点映射（用于 tool/children 归属）
 SUB_NODE_PARENT: dict[str, str] = {
     # 旅游规划子图：子级 --> 父级
+    "prepare_context":            "旅游规划",
     "collect_params":             "旅游规划",
     "validate_params":            "旅游规划",
     "query_geo":                  "旅游规划",
     "query_weather":              "旅游规划",
     "query_route":                "旅游规划",
     "generate_plan":              "旅游规划",
+    "refine_plan":                "旅游规划",
     # 综合助手子图：子级 --> 父级
     "assistant_collect_task":     "智能助手",
     "assistant_artifact_export":  "智能助手",
@@ -64,7 +68,7 @@ SUB_NODE_PARENT: dict[str, str] = {
 
 # 流式输出结果到主回复的节点（token → 正文）
 STREAM_NODES = {"chat_agent", "document_agent",
-                "generate_plan", "assistant_answer_generator"}
+                "generate_plan", "refine_plan", "assistant_answer_generator"}
 
 # 思考型节点：LLM 流式输出作为「思考」附属条目展示（thinking / thinking_token）
 THINKING_NODES = {

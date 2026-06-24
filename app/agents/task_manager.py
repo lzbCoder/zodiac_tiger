@@ -97,8 +97,10 @@ async def task_manager_node(state: AgentState, config: RunnableConfig) -> dict:
             "active_task_id": focus.task_id if focus else "",
             "task_action": action,
             "current_artifact_id": (focus.current_artifact_id or "") if focus else "",
+            "active_task_type": (focus.task_type or "") if focus else "",
         }
     except Exception as e:
         # 兜底：任务管理失败不阻断主流程
         logger.warning(f"[任务] task_manager 失败，降级无任务: {e}")
-        return {"active_task_id": "", "task_action": "NEW_TASK", "current_artifact_id": ""}
+        return {"active_task_id": "", "task_action": "NEW_TASK",
+                "current_artifact_id": "", "active_task_type": ""}
