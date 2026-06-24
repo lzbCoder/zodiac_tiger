@@ -1,7 +1,20 @@
 -- 越群山智能生活助手 - 数据库初始化脚本
 -- 每次启动自动执行，IF NOT EXISTS 保证幂等安全
 
--- 1. 对话历史表
+
+-- 会话主表（会话存在性的唯一来源；标题/置顶等会话级属性）
+CREATE TABLE IF NOT EXISTS root.chat_session (
+    session_id  VARCHAR(64) PRIMARY KEY,
+    user_id     VARCHAR(64) NOT NULL DEFAULT 'admin',
+    title       VARCHAR(100),                       -- 首条消息时写入，可被重命名覆盖
+    pinned      SMALLINT    NOT NULL DEFAULT 0,      -- 0否 1置顶
+    pinned_at   TIMESTAMP,                           -- 置顶时间，用于多个置顶项排序
+    create_time TIMESTAMP   NOT NULL DEFAULT NOW(),
+    update_time TIMESTAMP   NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_chat_session_order ON root.chat_session(pinned DESC, pinned_at DESC);
+
+-- 对话历史表
 CREATE TABLE IF NOT EXISTS root.chat_history (
     id          BIGSERIAL PRIMARY KEY,
     session_id  VARCHAR(64) NOT NULL,
@@ -12,7 +25,7 @@ CREATE TABLE IF NOT EXISTS root.chat_history (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON root.chat_history(session_id);
 
--- 2. 提示词模板表
+-- 提示词模板表
 CREATE TABLE IF NOT EXISTS root.prompt_templates (
     id          BIGSERIAL PRIMARY KEY,
     name        VARCHAR(100) NOT NULL,
@@ -22,7 +35,7 @@ CREATE TABLE IF NOT EXISTS root.prompt_templates (
     create_time TIMESTAMP    NOT NULL DEFAULT NOW()
 );
 
--- 4. 用户画像表
+-- 用户画像表
 CREATE TABLE IF NOT EXISTS root.user_profile (
     id          BIGSERIAL PRIMARY KEY,
     user_id     VARCHAR(64) NOT NULL,
@@ -37,7 +50,7 @@ CREATE TABLE IF NOT EXISTS root.user_profile (
 CREATE INDEX IF NOT EXISTS idx_user_profile_user ON root.user_profile(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_profile_key ON root.user_profile(key);
 
--- 7. 对话摘要表
+-- 对话摘要表
 CREATE TABLE IF NOT EXISTS root.conversation_summary (
     id              BIGSERIAL PRIMARY KEY,
     user_id         VARCHAR(64),
@@ -49,7 +62,7 @@ CREATE TABLE IF NOT EXISTS root.conversation_summary (
     updated_at      TIMESTAMP DEFAULT NOW()
 );
 
--- 8. 执行日志表
+-- 执行日志表
 CREATE TABLE IF NOT EXISTS root.execution_log (
     id          BIGSERIAL PRIMARY KEY,
     session_id  VARCHAR(64),
@@ -62,7 +75,7 @@ CREATE TABLE IF NOT EXISTS root.execution_log (
     create_time TIMESTAMP DEFAULT NOW()
 );
 
--- 9. 执行错误日志表（节点异常记录，error_handler 写入）
+-- 执行错误日志表（节点异常记录，error_handler 写入）
 CREATE TABLE IF NOT EXISTS root.execution_error_log (
     id                      BIGSERIAL PRIMARY KEY,
     session_id              VARCHAR(64),
@@ -76,7 +89,7 @@ CREATE TABLE IF NOT EXISTS root.execution_error_log (
 );
 CREATE INDEX IF NOT EXISTS idx_exec_err_chat_id ON root.execution_error_log(chat_id);
 
--- 10. 用户侧意图能力展示配置表
+-- 用户侧意图能力展示配置表
 CREATE TABLE IF NOT EXISTS root.intent_display_config (
     id          BIGSERIAL PRIMARY KEY,
     intent_key  VARCHAR(64)  NOT NULL UNIQUE,
@@ -96,6 +109,8 @@ VALUES
     ('chat', '💬 通用智能问答', '支持文案写作、公文撰写、知识查询、思路梳理、日常咨询等全场景通用对话', '帮我写一份简洁的月度工作小结', 'chat', 3, 1),
     ('assistant', '🤖 综合智能助手', '处理数据分析、文案撰写、知识咨询、事务协助等各类综合需求（含Excel/CSV数据分析）', '分析上传的销售表格，找出近3个月销量下滑原因 / 解释一下分布式概念', 'assistant', 4, 1)
 ON CONFLICT (intent_key) DO NOTHING;
+
+-- 文件信息表（用于存储上传文件的元信息，实际文件存储在对象存储中）
 CREATE TABLE IF NOT EXISTS root.file_info (
     id              BIGSERIAL PRIMARY KEY,
     file_name       VARCHAR(255) NOT NULL,

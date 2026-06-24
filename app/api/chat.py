@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
-from app.schemas.chat import ChatRequest, ResumeRequest, AbortRequest
+from app.schemas.chat import ChatRequest, ResumeRequest, AbortRequest, RenameSessionRequest, PinSessionRequest
 from app.services import chat_service
 from app.services.summary_service import summarize_and_prune, get_latest_summary
 from app.services import execution_log_service
@@ -500,6 +500,31 @@ async def new_session():
         return success({"session_id": session_id})
     except Exception as e:
         logger.error(f"创建会话失败: {e}")
+        return fail(message=str(e))
+
+
+@router.post("/chat/session/rename")
+async def rename_session(req: RenameSessionRequest):
+    """重命名会话（持久化标题）。"""
+    try:
+        title = (req.title or "").strip()
+        if not title:
+            return fail(message="标题不能为空")
+        await chat_service.rename_session(req.session_id, title)
+        return success(message="重命名成功")
+    except Exception as e:
+        logger.error(f"重命名会话失败: {e}")
+        return fail(message=str(e))
+
+
+@router.post("/chat/session/pin")
+async def pin_session(req: PinSessionRequest):
+    """置顶/取消置顶会话。"""
+    try:
+        await chat_service.set_session_pinned(req.session_id, req.pinned)
+        return success(message="操作成功")
+    except Exception as e:
+        logger.error(f"会话置顶操作失败: {e}")
         return fail(message=str(e))
 
 

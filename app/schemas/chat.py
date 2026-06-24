@@ -17,6 +17,16 @@ class AbortRequest(BaseModel):
     session_id: str
 
 
+class RenameSessionRequest(BaseModel):
+    session_id: str
+    title: str
+
+
+class PinSessionRequest(BaseModel):
+    session_id: str
+    pinned: bool
+
+
 class ChatHistoryItem(BaseModel):
     id: int
     session_id: str

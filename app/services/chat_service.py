@@ -1,19 +1,49 @@
 import json
 import uuid
-from sqlalchemy import select, func, delete
+from datetime import datetime
+from sqlalchemy import select, func, delete, update
 
 from app.db.session import get_db_session
 from app.models.chat_history import ChatHistory
+from app.models.chat_session import ChatSession
 from app.models.execution_log import ExecutionLog
 from app.models.execution_error_log import ExecutionErrorLog
 
 
-async def create_session() -> str:
-    return uuid.uuid4().hex
+async def create_session(user_id: str = "admin") -> str:
+    """新建会话：在 chat_session 主表落一行，title 暂为空（首条消息时写入）。"""
+    session_id = uuid.uuid4().hex
+    async with get_db_session() as session:
+        session.add(ChatSession(session_id=session_id, user_id=user_id))
+        await session.commit()
+    return session_id
+
+
+async def rename_session(session_id: str, title: str) -> None:
+    """重命名会话：覆盖 chat_session.title。"""
+    async with get_db_session() as session:
+        await session.execute(
+            update(ChatSession)
+            .where(ChatSession.session_id == session_id)
+            .values(title=title[:100])
+        )
+        await session.commit()
+
+
+async def set_session_pinned(session_id: str, pinned: bool) -> None:
+    """置顶/取消置顶：pinned_at 置顶时记当前时间，取消时清空。"""
+    async with get_db_session() as session:
+        await session.execute(
+            update(ChatSession)
+            .where(ChatSession.session_id == session_id)
+            .values(pinned=1 if pinned else 0,
+                    pinned_at=datetime.now() if pinned else None)
+        )
+        await session.commit()
 
 
 async def delete_session(session_id: str) -> None:
-    # 先删产物（依赖 tasks 反查），再删任务，最后删对话/日志
+    # 先删产物（依赖 tasks 反查），再删任务，最后删对话/日志/会话主表
     from app.services import artifact_service, task_service
     await artifact_service.delete_by_session(session_id)
     await task_service.delete_by_session(session_id)
@@ -21,39 +51,55 @@ async def delete_session(session_id: str) -> None:
         await session.execute(delete(ChatHistory).where(ChatHistory.session_id == session_id))
         await session.execute(delete(ExecutionLog).where(ExecutionLog.session_id == session_id))
         await session.execute(delete(ExecutionErrorLog).where(ExecutionErrorLog.session_id == session_id))
+        await session.execute(delete(ChatSession).where(ChatSession.session_id == session_id))
         await session.commit()
 
 
 async def list_sessions() -> list[dict]:
+    """以 chat_session 主表为准，LEFT JOIN chat_history 取最后活跃时间。
+
+    排序：置顶优先 → 置顶时间倒序 → 最后活跃时间（无消息回退创建时间）倒序。
+    """
     async with get_db_session() as session:
-        stmt = (
+        last_sub = (
             select(
-                ChatHistory.session_id,
+                ChatHistory.session_id.label("sid"),
                 func.max(ChatHistory.create_time).label("last_time"),
             )
             .group_by(ChatHistory.session_id)
-            .order_by(func.max(ChatHistory.create_time).desc())
+            .subquery()
+        )
+        order_time = func.coalesce(last_sub.c.last_time, ChatSession.create_time)
+        stmt = (
+            select(
+                ChatSession.session_id,
+                ChatSession.title,
+                ChatSession.pinned,
+                ChatSession.create_time,
+                last_sub.c.last_time,
+            )
+            .select_from(ChatSession)
+            .outerjoin(last_sub, last_sub.c.sid == ChatSession.session_id)
+            .order_by(
+                ChatSession.pinned.desc(),
+                ChatSession.pinned_at.desc().nullslast(),
+                order_time.desc(),
+            )
             .limit(50)
         )
         result = await session.execute(stmt)
         rows = result.all()
 
-        items = []
-        for row in rows:
-            title_stmt = (
-                select(ChatHistory.content)
-                .where(ChatHistory.session_id == row.session_id)
-                .order_by(ChatHistory.create_time.asc())
-                .limit(1)
-            )
-            title_result = await session.execute(title_stmt)
-            title = title_result.scalar() or "新会话"
-            items.append({
-                "session_id": row.session_id,
-                "title": title[:30],
-                "last_time": row.last_time.strftime("%m-%d %H:%M") if row.last_time else "",
-                "create_time": row.last_time.strftime("%Y-%m-%d %H:%M:%S") if row.last_time else "",
-            })
+    items = []
+    for row in rows:
+        active = row.last_time or row.create_time
+        items.append({
+            "session_id": row.session_id,
+            "title": (row.title or "新会话")[:30],
+            "pinned": int(row.pinned or 0),
+            "last_time": active.strftime("%m-%d %H:%M") if active else "",
+            "create_time": active.strftime("%Y-%m-%d %H:%M:%S") if active else "",
+        })
     return items
 
 
@@ -66,6 +112,13 @@ async def save_message(session_id: str, role: str, content: str, chat_id: str | 
             chat_id=chat_id,
         )
         session.add(obj)
+        # 首条用户消息自动作为标题（仅 title 为空时写入，重命名后不再覆盖）
+        if role == "user":
+            await session.execute(
+                update(ChatSession)
+                .where(ChatSession.session_id == session_id, ChatSession.title.is_(None))
+                .values(title=content[:100])
+            )
         await session.commit()
 
 
