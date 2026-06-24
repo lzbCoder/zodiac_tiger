@@ -5,6 +5,7 @@ class ChatRequest(BaseModel):
     session_id: str
     message: str
     enable_search: bool = False
+    reply_model: str | None = None   # 前端选择的"最终 AI 回复"模型；None/非法时回退 CHAT_MODEL
 
 
 class ResumeRequest(BaseModel):

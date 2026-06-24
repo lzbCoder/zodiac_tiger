@@ -44,6 +44,9 @@ class Settings:
     INTENT_MODEL: str = os.getenv("INTENT_MODEL", "qwen-turbo")
     MEMORY_SUMMARY_MODEL: str = os.getenv("MEMORY_SUMMARY_MODEL", "qwen-plus")
 
+    # 前端可切换的"最终 AI 回复"模型白名单（仅作用于最终回复节点，执行过程模型不变）
+    REPLY_MODELS: list[str] = ["qwen3.7-plus", "qwen3.6-flash", "deepseek-v4-pro", "ZHIPU/GLM-5.2"]
+
     # Embedding
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
     EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "1024"))

@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db.session import get_db_session
-from app.factory.llm_factory import create_llm
+from app.factory.llm_factory import create_llm, resolve_reply_model
 from app.mcp.mcp_manager import GlobalMcpManager
 from app.models.agent_skill_rel import AgentSkillRel
 from app.prompts.loader import render, render_messages
@@ -336,7 +336,8 @@ async def answer_generator_node(state: AssistantState, config: RunnableConfig) -
     obs_text = _scratchpad_observations(state.get("scratchpad", []))
     messages = render_messages("assistant_answer", task=state.get("task", ""), obs_text=obs_text)
 
-    llm = create_llm(settings.CHAT_MODEL, streaming=True)
+    # 最终答案生成：使用前端选择的模型（planner 等执行过程节点保持 CHAT_MODEL 不变）
+    llm = create_llm(resolve_reply_model(config), streaming=True)
     answer = ""
     async for chunk in llm.astream(messages):
         if chunk.content:

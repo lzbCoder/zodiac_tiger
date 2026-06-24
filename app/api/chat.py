@@ -214,6 +214,7 @@ async def chat_stream(req: ChatRequest):
                     "session_id": session_id,
                     "thread_id": f"admin:{session_id}",
                     "enable_search": req.enable_search,
+                    "reply_model": req.reply_model,   # 仅最终回复节点采用，白名单校验在节点侧
                 }
             }
 

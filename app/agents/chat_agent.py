@@ -36,16 +36,16 @@ async def _build_fuzzy_prompt(state: AgentState) -> str | None:
 
 async def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """智能聊天节点：调用 LLM 生成回复，可选联网搜索。"""
-    from app.factory.llm_factory import create_llm
-    from app.config import settings
+    from app.factory.llm_factory import create_llm, resolve_reply_model
 
     user_message = state["messages"][-1].content if state["messages"] else ""
     enable_search = config["configurable"].get("enable_search", False)
+    reply_model = resolve_reply_model(config)   # 前端选择的最终回复模型
 
     # 模糊提问 → 直接读数据库组装能力引导
     fuzzy_prompt = await _build_fuzzy_prompt(state)
     if fuzzy_prompt:
-        llm = create_llm(settings.CHAT_MODEL)
+        llm = create_llm(reply_model)
         resp = await llm.ainvoke(fuzzy_prompt)
         reply = resp.content
         result: dict = {
@@ -54,7 +54,7 @@ async def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
         }
         return result
 
-    llm = create_llm(settings.CHAT_MODEL, streaming=True)
+    llm = create_llm(reply_model, streaming=True)
 
     memory_ctx = _build_memory_context(state)
 

@@ -6,7 +6,7 @@ from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
 from app.config import settings
-from app.factory.llm_factory import create_llm
+from app.factory.llm_factory import create_llm, resolve_reply_model
 from app.state.travel_state import TravelState
 from app.prompts.loader import render
 from app.agents.agent_utils import astream_accumulate
@@ -149,7 +149,7 @@ async def generate_plan_node(state: TravelState, config: RunnableConfig) -> dict
             user_msg = m.content
             break
 
-    llm = create_llm(settings.CHAT_MODEL, streaming=True)
+    llm = create_llm(resolve_reply_model(config), streaming=True)
     prompt = render("travel_generate_plan", ctx=str(ctx), user_msg=user_msg)
 
     enable_search = config["configurable"].get("enable_search", False)
@@ -185,7 +185,7 @@ async def refine_plan_node(state: TravelState, config: RunnableConfig) -> dict:
             user_msg = m.content
             break
 
-    llm = create_llm(settings.CHAT_MODEL, streaming=True)
+    llm = create_llm(resolve_reply_model(config), streaming=True)
     prompt = render("travel_refine_plan", prior_plan=prior_plan, user_msg=user_msg)
 
     enable_search = config["configurable"].get("enable_search", False)
