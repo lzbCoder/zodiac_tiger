@@ -95,7 +95,8 @@ def _yield_progress(name: str, buf: list):
 
 
 async def _stream_graph(graph, input_data, config, events_buf, session_id: str = "",
-                        content_out: list | None = None, abort_out: list | None = None):
+                        content_out: list | None = None, abort_out: list | None = None,
+                        show_reasoning: bool = False):
     """
     执行 LangGraph astream_events 并逐事件 yield SSE。
     流式 token 实时累积后通过 content_out[0] 传回，不再写入 events_buf。
@@ -116,7 +117,7 @@ async def _stream_graph(graph, input_data, config, events_buf, session_id: str =
     stream = graph.astream_events(input_data, config, version="v2")
     _check = 0
     try:
-        async for ev in parse_events(stream):
+        async for ev in parse_events(stream, show_reasoning=show_reasoning):
             _check += 1
             if r and _check % 10 == 0:
                 try:
@@ -215,6 +216,7 @@ async def chat_stream(req: ChatRequest):
                     "thread_id": f"admin:{session_id}",
                     "enable_search": req.enable_search,
                     "reply_model": req.reply_model,   # 仅最终回复节点采用，白名单校验在节点侧
+                    "enable_thinking": req.show_reasoning,  # 最终回复思维链开关（模型推理 + 上屏）
                 }
             }
 
@@ -234,7 +236,8 @@ async def chat_stream(req: ChatRequest):
             # 5. 执行 Graph 事件流
             content_out: list[str] = []
             abort_out: list[bool] = []
-            stream_gen = _stream_graph(graph, initial_state, config, events_buf, session_id, content_out, abort_out)
+            stream_gen = _stream_graph(graph, initial_state, config, events_buf, session_id, content_out, abort_out,
+                                       show_reasoning=req.show_reasoning)
             async for _sse in stream_gen:
                 yield _sse
             stream_gen = None
@@ -355,7 +358,9 @@ async def chat_resume(req: ResumeRequest):
             # 4. 以 Command(resume=params) 恢复 Graph 执行
             content_out: list[str] = []
             abort_out: list[bool] = []
-            stream_gen = _stream_graph(graph, Command(resume=req.params), full_config, events_buf, sid, content_out, abort_out)
+            _resume_show_reasoning = bool(full_config["configurable"].get("enable_thinking", False))
+            stream_gen = _stream_graph(graph, Command(resume=req.params), full_config, events_buf, sid, content_out, abort_out,
+                                       show_reasoning=_resume_show_reasoning)
             async for _sse in stream_gen:
                 yield _sse
             stream_gen = None

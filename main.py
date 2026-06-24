@@ -27,6 +27,42 @@ from app.agents.graph import build_graph, build_graph_with_checkpointer, set_age
 from app.api import chat, template, skill, mcp, file, settings as settings_router, intent_display
 
 
+async def _warmup_runtime():
+    """后台预热运行时依赖（全部只读，不产生任何业务数据）：
+    embedding TLS 握手、Milvus 集合加载入内存、PG 连接池建连、LLM 连接。
+    不走 graph / save_message，避免污染对话历史、checkpoint、长期记忆。"""
+    from loguru import logger
+
+    try:
+        from app.utils.embedding import embed
+        await embed("warmup")
+    except Exception as e:
+        logger.warning(f"预热 embedding 失败: {e}")
+
+    try:
+        from app.db.milvus import get_episodic_collection
+        await asyncio.to_thread(get_episodic_collection().load)
+    except Exception as e:
+        logger.warning(f"预热 Milvus 失败: {e}")
+
+    try:
+        from sqlalchemy import text
+        from app.db.session import get_db_session
+        async with get_db_session() as s:
+            await s.execute(text("SELECT 1"))
+    except Exception as e:
+        logger.warning(f"预热 PG 失败: {e}")
+
+    try:
+        from app.factory.llm_factory import create_llm
+        llm = create_llm(settings.INTENT_MODEL, streaming=False)
+        await llm.ainvoke("hi")
+    except Exception as e:
+        logger.warning(f"预热 LLM 失败: {e}")
+
+    logger.info("运行时预热完成")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from loguru import logger
@@ -102,6 +138,10 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(GlobalMcpManager.warmup_sse())
     except Exception as e:
         logger.error(f"MCP Manager 初始化失败: {e}")
+
+    # 运行时预热：后台触发 embedding/Milvus/PG/LLM 冷启动（均为只读，无垃圾数据），
+    # 避免首个真实请求独自承担 TLS 握手、连接池建连、集合加载等开销。
+    asyncio.create_task(_warmup_runtime())
 
     # 启动定时清理任务
     start_cleanup_task()

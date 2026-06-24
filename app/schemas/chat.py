@@ -6,6 +6,7 @@ class ChatRequest(BaseModel):
     message: str
     enable_search: bool = False
     reply_model: str | None = None   # 前端选择的"最终 AI 回复"模型；None/非法时回退 CHAT_MODEL
+    show_reasoning: bool = False     # 是否对最终回复开启思维链（开关含义：模型推理开关 + 推理过程是否上屏）
 
 
 class ResumeRequest(BaseModel):

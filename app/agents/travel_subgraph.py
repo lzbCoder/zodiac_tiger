@@ -6,7 +6,7 @@ from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
 from app.config import settings
-from app.factory.llm_factory import create_llm, resolve_reply_model
+from app.factory.llm_factory import create_llm, create_reply_llm, resolve_reply_model
 from app.state.travel_state import TravelState
 from app.prompts.loader import render
 from app.agents.agent_utils import astream_accumulate
@@ -149,7 +149,7 @@ async def generate_plan_node(state: TravelState, config: RunnableConfig) -> dict
             user_msg = m.content
             break
 
-    llm = create_llm(resolve_reply_model(config), streaming=True)
+    llm = create_reply_llm(config, streaming=True)   # 按"显示思维链"开关决定是否开启模型推理
     prompt = render("travel_generate_plan", ctx=str(ctx), user_msg=user_msg)
 
     enable_search = config["configurable"].get("enable_search", False)
@@ -185,7 +185,7 @@ async def refine_plan_node(state: TravelState, config: RunnableConfig) -> dict:
             user_msg = m.content
             break
 
-    llm = create_llm(resolve_reply_model(config), streaming=True)
+    llm = create_reply_llm(config, streaming=True)   # 按"显示思维链"开关决定是否开启模型推理
     prompt = render("travel_refine_plan", prior_plan=prior_plan, user_msg=user_msg)
 
     enable_search = config["configurable"].get("enable_search", False)

@@ -114,6 +114,8 @@ class _ParseState:
     cycle_counts: dict[str, int] = field(default_factory=dict)  # ReAct 节点出现次数
     react_rounds: dict[str, int] = field(default_factory=dict)  # ReAct 节点当前轮次（start 时写入，end 时读取）
     attempts:     dict[str, int] = field(default_factory=dict)  # 节点重试计数（连续 start 无 end = 重试递增，end 复位）
+    stream_think_started: set = field(default_factory=set)        # STREAM_NODES 中已开始输出 reasoning 的节点
+    stream_think_buf:     dict[str, str] = field(default_factory=dict)  # STREAM_NODES 的 reasoning 累积（供 completed 回显）
 
 
 # ReAct 循环节点（每轮重复出现，靠 react_round 字段区分，不在名称上加 #n）
@@ -248,40 +250,75 @@ def _chunk_reasoning(obj) -> str:
     return ak.get("reasoning_content") or ""
 
 
-def _handle_chat_model_stream(node: str, data: dict, tags: list, state: _ParseState) -> AgentEvent | None:
-    """处理 on_chat_model_stream：STREAM_NODES→正文 token；THINKING_NODES→thinking_token。
+def _handle_chat_model_stream(node: str, data: dict, tags: list, state: _ParseState,
+                              show_reasoning: bool = False) -> list[AgentEvent]:
+    """处理 on_chat_model_stream：STREAM_NODES→正文 token（推理通道另作思考流）；THINKING_NODES→thinking_token。
 
     思考节点双通道：content（正常文本）或 reasoning_content（推理通道）任一有值即作思考流。
+    STREAM_NODES（最终回复/行程生成等）仅当 show_reasoning=True 时把 reasoning_content 作为思考流上屏，
+    消除"思考阶段几十秒无任何输出"的等待感；content 始终作正文 token 流式输出。
     """
     if "skip_stream" in tags:
-        return None
+        return []
     chunk = data.get("chunk")
     if not chunk:
-        return None
+        return []
     content = getattr(chunk, "content", "") or ""
 
     if node in STREAM_NODES:
-        if not content:
-            return None
-        return AgentEvent(
-            event_type="token", name=node,
-            status="running", content=content,
-        )
+        events: list[AgentEvent] = []
+        reasoning = _chunk_reasoning(chunk) if show_reasoning else ""
+        if reasoning:
+            label = NODE_LABELS.get(node, node)
+            if node not in state.stream_think_started:
+                state.stream_think_started.add(node)
+                state.node_starts[f"think:{node}"] = _now_ts()
+                events.append(AgentEvent(
+                    event_type="thinking", name=label,
+                    status="running", metadata={"attach_to": label},
+                ))
+            state.stream_think_buf[node] = state.stream_think_buf.get(node, "") + reasoning
+            events.append(AgentEvent(
+                event_type="thinking_token", name=label,
+                status="running", content=reasoning, metadata={"attach_to": label},
+            ))
+        if content:
+            events.append(AgentEvent(
+                event_type="token", name=node,
+                status="running", content=content,
+            ))
+        return events
     if node in THINKING_NODES:
         text = content or _chunk_reasoning(chunk)   # 双通道
         if not text:
-            return None
-        return AgentEvent(
+            return []
+        return [AgentEvent(
             event_type="thinking_token", name=NODE_LABELS.get(node, node),
             status="running", content=text,
             metadata=_thinking_meta(node, state),
-        )
-    return None
+        )]
+    return []
 
 
 def _handle_chat_model_end(name: str, meta: dict, data: dict, state: _ParseState) -> list[AgentEvent]:
-    """处理 on_chat_model_end：思考节点发射 thinking(completed) 含完整内容与耗时。"""
+    """处理 on_chat_model_end：思考节点发射 thinking(completed) 含完整内容与耗时。
+
+    STREAM_NODES 若在本次输出过 reasoning（思考模型），同样收尾一条 thinking(completed)，
+    携带完整推理与耗时，供执行记录回显。
+    """
     node = meta.get("langgraph_node", name)
+    if node in STREAM_NODES:
+        if node not in state.stream_think_started:
+            return []
+        state.stream_think_started.discard(node)
+        start = state.node_starts.pop(f"think:{node}", _now_ts())
+        cost = _now_ts() - start
+        label = NODE_LABELS.get(node, node)
+        return [AgentEvent(
+            event_type="thinking", name=label,
+            status="completed", content=state.stream_think_buf.pop(node, ""), cost_ms=cost,
+            metadata={"attach_to": label},
+        )]
     if node not in THINKING_NODES:
         return []
     start = state.node_starts.pop(f"think:{node}", _now_ts())
@@ -345,8 +382,11 @@ def _handle_tool_end(name: str, meta: dict, data: dict, state: _ParseState, run_
 
 # ---- 主事件解析函数 ----
 
-async def parse_events(stream):
-    """解析 LangGraph 事件流，yield AgentEvent 实例。"""
+async def parse_events(stream, show_reasoning: bool = False):
+    """解析 LangGraph 事件流，yield AgentEvent 实例。
+
+    show_reasoning：是否把最终回复节点的思维链（reasoning_content）上屏，由前端"显示思维链"开关控制。
+    """
     state = _ParseState()  # 每次调用独立实例，并发安全
 
     async for event in stream:
@@ -403,8 +443,7 @@ async def parse_events(stream):
         # --- on_chat_model_stream: 正文 token / 思考增量 ---
         elif ev == "on_chat_model_stream":
             node = meta.get("langgraph_node", "")
-            ae = _handle_chat_model_stream(node, data, tags, state)
-            if ae:
+            for ae in _handle_chat_model_stream(node, data, tags, state, show_reasoning):
                 yield ae
 
         # --- on_chat_model_end: LLM 完成 ---

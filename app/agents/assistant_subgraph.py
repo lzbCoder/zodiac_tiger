@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db.session import get_db_session
-from app.factory.llm_factory import create_llm, resolve_reply_model
+from app.factory.llm_factory import create_llm, create_reply_llm, resolve_reply_model
 from app.mcp.mcp_manager import GlobalMcpManager
 from app.models.agent_skill_rel import AgentSkillRel
 from app.prompts.loader import render, render_messages
@@ -225,7 +225,12 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
     # 仅绑定路由/管理选出的工具子集 + request_tools 元工具（让模型可申请补充能力）
     bound = [pool[n] for n in activated if n in pool] + [request_tools]
 
-    llm = create_llm(settings.CHAT_MODEL, streaming=True).bind_tools(bound)
+    # 规划仅需工具决策：用快模型并关闭思考模式（enable_thinking=False），
+    # 把"单轮规划数十秒"压到数秒内；模型仍会流式输出简短决策文本作为思考过程上屏。
+    llm = create_llm(
+        settings.PLANNER_MODEL, streaming=True,
+        extra_body={"enable_thinking": False},
+    ).bind_tools(bound)
 
     system_msgs = render_messages(
         "assistant_planner",
@@ -336,8 +341,8 @@ async def answer_generator_node(state: AssistantState, config: RunnableConfig) -
     obs_text = _scratchpad_observations(state.get("scratchpad", []))
     messages = render_messages("assistant_answer", task=state.get("task", ""), obs_text=obs_text)
 
-    # 最终答案生成：使用前端选择的模型（planner 等执行过程节点保持 CHAT_MODEL 不变）
-    llm = create_llm(resolve_reply_model(config), streaming=True)
+    # 最终答案生成：使用前端选择的模型 + 按"显示思维链"开关决定是否开启推理
+    llm = create_reply_llm(config, streaming=True)
     answer = ""
     async for chunk in llm.astream(messages):
         if chunk.content:

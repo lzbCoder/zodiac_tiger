@@ -42,10 +42,12 @@ class Settings:
     CHAT_MODEL: str = os.getenv("CHAT_MODEL", "qwen3.7-plus")
     REASONING_MODEL: str = os.getenv("REASONING_MODEL", "deepseek-v4-pro")
     INTENT_MODEL: str = os.getenv("INTENT_MODEL", "qwen-turbo")
+    # ReAct 规划节点专用：仅做工具决策，用快模型 + 关闭思考，避免单轮规划耗时数十秒
+    PLANNER_MODEL: str = os.getenv("PLANNER_MODEL", "qwen3.6-flash")
     MEMORY_SUMMARY_MODEL: str = os.getenv("MEMORY_SUMMARY_MODEL", "qwen-plus")
 
     # 前端可切换的"最终 AI 回复"模型白名单（仅作用于最终回复节点，执行过程模型不变）
-    REPLY_MODELS: list[str] = ["qwen3.7-plus", "qwen3.6-flash", "deepseek-v4-pro", "ZHIPU/GLM-5.2"]
+    REPLY_MODELS: list[str] = ["qwen3.7-plus", "qwen3.6-flash", "deepseek-v4-pro"]
 
     # Embedding
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
