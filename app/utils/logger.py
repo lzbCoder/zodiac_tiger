@@ -38,7 +38,7 @@ def setup_logging() -> None:
     # 控制台输出
     logger.add(
         sys.stdout,
-        level="DEBUG",
+        level="INFO",
         format=LOG_FMT,
         colorize=True,
     )
@@ -46,7 +46,7 @@ def setup_logging() -> None:
     # app.log — INFO 级别
     logger.add(
         str(APP_LOG),
-        level="DEBUG",
+        level="INFO",
         format=LOG_FMT,
         rotation="2 MB",
         compression="tar.gz",

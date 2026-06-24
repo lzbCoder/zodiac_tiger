@@ -4,10 +4,25 @@ from datetime import datetime
 from pathlib import Path
 
 from langchain_core.runnables import RunnableConfig
+from langchain_core.callbacks import adispatch_custom_event
 from loguru import logger
 
 from app.state.agent_state import AgentState
 from app.services import file_service
+
+
+async def _stream_doc_info(text: str, config: RunnableConfig) -> None:
+    """把确定性文件信息按行作为 doc_token 自定义事件发出，经 event_sse 转 token 上屏。
+
+    不经 LLM，保证下载链接等内容逐字正确。失败不阻断主流程。
+    """
+    try:
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            chunk = line if i == len(lines) - 1 else line + "\n"
+            await adispatch_custom_event("doc_token", {"content": chunk}, config=config)
+    except Exception as e:
+        logger.warning(f"[文档] 流式输出文件信息失败: {e}")
 
 FORMAT_EXT: dict[str, str] = {
     "md": ".md",
@@ -138,6 +153,7 @@ async def document_agent_node(state: AgentState, config: RunnableConfig) -> dict
             f"暂不支持生成 **{fmt.upper()}** 格式文档，"
             f"已为您默认输出 Markdown 原文：\n\n{content}"
         )
+        await _stream_doc_info(hint, config)
         return {"messages": [{"role": "ai", "content": hint}]}
 
     # ---- 实体文件生成（内存 → save_file 写盘 + 入库） ----
@@ -174,4 +190,11 @@ async def document_agent_node(state: AgentState, config: RunnableConfig) -> dict
         f"[点击下载文档]({download_url})"
     )
 
-    return {"messages": [{"role": "ai", "content": reply}]}
+    await _stream_doc_info(reply, config)   # 确定性文件信息流式上屏（不经 LLM）
+
+    result: dict = {"messages": [{"role": "ai", "content": reply}]}
+    try:
+        result["last_file_id"] = str(record.id)   # 供 artifact_store 关联产物文件
+    except Exception:
+        pass
+    return result

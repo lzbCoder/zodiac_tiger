@@ -1,19 +1,49 @@
-"""Milvus 过期记忆定时清理服务。"""
+"""定时清理服务：episodic 过期记忆删除 + procedural 程序记忆衰减。"""
 
 import asyncio
 import time
+from datetime import datetime, timedelta
 
 from loguru import logger
+from sqlalchemy import update, and_
 
 from app.db.milvus import get_episodic_collection
+from app.db.session import get_db_session
+from app.models.procedural_memory import ProceduralMemory
+from app.config import settings
 
 _CLEANUP_INTERVAL_SECONDS = 3600  # 每小时执行一次
 
 _cleanup_task: asyncio.Task | None = None
 
 
+async def _decay_procedural_memories():
+    """对长期未命中的程序规则衰减 score，低于阈值则置失效(status=0)。"""
+    cutoff = datetime.now() - timedelta(days=settings.PROCEDURAL_DECAY_DAYS)
+    async with get_db_session() as session:
+        # 超期未命中 → score *= 衰减因子
+        await session.execute(
+            update(ProceduralMemory)
+            .where(and_(ProceduralMemory.status == 1,
+                        ProceduralMemory.last_hit_at.is_not(None),
+                        ProceduralMemory.last_hit_at < cutoff))
+            .values(score=ProceduralMemory.score * settings.PROCEDURAL_DECAY_FACTOR,
+                    updated_at=datetime.now())
+        )
+        # 低分 → 失效
+        result = await session.execute(
+            update(ProceduralMemory)
+            .where(and_(ProceduralMemory.status == 1,
+                        ProceduralMemory.score < settings.PROCEDURAL_MIN_SCORE))
+            .values(status=0, updated_at=datetime.now())
+        )
+        await session.commit()
+    if result.rowcount:
+        logger.info(f"程序记忆衰减失效: {result.rowcount} 条")
+
+
 async def _cleanup_expired_memories():
-    """定时清理 episodic_memory 中过期的记忆。"""
+    """定时清理 episodic_memory 过期记忆 + 程序记忆衰减。"""
     while True:
         try:
             await asyncio.sleep(_CLEANUP_INTERVAL_SECONDS)
@@ -25,6 +55,10 @@ async def _cleanup_expired_memories():
                 logger.info(f"清理过期记忆: {count} 条")
         except Exception as e:
             logger.warning(f"清理过期记忆失败: {e}")
+        try:
+            await _decay_procedural_memories()
+        except Exception as e:
+            logger.warning(f"程序记忆衰减失败: {e}")
 
 
 def start_cleanup_task():

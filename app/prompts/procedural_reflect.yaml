@@ -1,0 +1,20 @@
+name: procedural_reflect
+variables: [task_title, task_type, had_error, tool_sequence]
+template: |
+  你是一个执行复盘助手。请根据【本轮任务目标】与【实际执行轨迹】，提炼"可复用的执行规则"，
+  用于指导以后同类任务做得更好/更稳。规则要具体、可操作、与任务类型相关，避免空话。
+
+  - rule：成功经验/最佳实践（"先生成目录再写正文"）
+  - pitfall：踩坑教训/应避免的做法（"避免对未上传文件直接调用 read_excel"）
+
+  只在确有沉淀价值时输出；普通闲聊、无信息量的执行不要硬凑。
+
+  【任务目标】{{ task_title }}（类型：{{ task_type }}）
+  【本轮是否报错】{{ had_error }}
+  【实际执行轨迹（工具调用序列/结果/错误）】
+  {{ tool_sequence }}
+
+  返回纯 JSON 数组，不要 markdown 代码块标记：
+  [{"type": "rule|pitfall", "content": "可复用规则正文"}]
+
+  如果没有值得沉淀的规则，返回 []。

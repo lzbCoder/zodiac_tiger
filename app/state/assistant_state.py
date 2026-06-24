@@ -31,6 +31,9 @@ class AssistantState(AgentState):
     final_answer: NotRequired[str]
     """生成的最终回答内容。"""
 
+    task_context: NotRequired[str]
+    """任务已有进展上下文（CONTINUE/SWITCH/产物改写时注入），collect_task 写入，planner 读取。"""
+
     skill_context: NotRequired[str]
     """已激活技能的 XML 上下文，由 activate_skill_node 写入，planner 读取；多技能时在节点内合并。"""
 

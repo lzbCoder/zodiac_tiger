@@ -10,6 +10,7 @@ from app.services import chat_service
 from app.services.summary_service import summarize_and_prune, get_latest_summary
 from app.services import execution_log_service
 from app.services import execution_error_service
+from app.services import reflection_service
 from app.agents.graph import get_agent_graph
 from app.state.agent_state import AgentState
 from app.sse.event_sse import parse_events, AgentEvent
@@ -19,6 +20,17 @@ from app.db.checkpoint import delete_checkpoint_thread
 from app.utils.response import success, fail
 
 router = APIRouter(tags=["聊天对话"])
+
+# 后台反思任务引用集合，防止 fire-and-forget 任务被 GC
+_bg_tasks: set = set()
+
+
+def _last_human_content(messages: list) -> str:
+    """从 state 消息中取最近一条用户消息内容，供反思的反馈检测。"""
+    for m in reversed(messages or []):
+        if getattr(m, "type", None) == "human":
+            return m.content or ""
+    return ""
 
 
 # ========== 公共私有函数（/chat/stream 和 /chat/resume 共用） ==========
@@ -149,6 +161,18 @@ async def _finalize(snap, full_content, session_id, user_id, config, events_buf)
         snap.values if snap else {}, user_id, session_id, config)
     await execution_log_service.batch_save_events(
         events_buf, session_id, config["configurable"]["chat_id"])
+
+    # 后台异步反思（程序记忆），不阻塞响应。日志需先入库，反思才能读到 execution_log。
+    try:
+        chat_id = config["configurable"]["chat_id"]
+        user_msg = _last_human_content(snap.values.get("messages") if snap else None)
+        major_event = bool(full_content) and "文档已生成" in full_content   # 生成文件视为重大事件
+        task = asyncio.create_task(
+            reflection_service.maybe_reflect(user_id, session_id, chat_id, user_msg, major_event=major_event))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
+    except Exception as e:
+        logger.warning(f"[反思] 触发失败: {e}")
 
 
 def _build_stream_response(generator_fn):

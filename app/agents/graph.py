@@ -2,12 +2,14 @@ from typing import Literal
 from langgraph.graph import StateGraph, END
 
 from app.state.agent_state import AgentState
+from app.agents.task_manager import task_manager_node
 from app.agents.dispatcher import dispatcher_node
 from app.agents.travel_subgraph import build_travel_subgraph
 from app.agents.assistant_subgraph import build_assistant_agent
 from app.agents.memory_recall import memory_recall_node
 from app.agents.memory_extraction import memory_extraction_node
 from app.agents.document_agent import document_agent_node
+from app.agents.artifact_store import artifact_store_node
 from app.agents.chat_agent import chat_agent_node
 from app.agents.error_policy import (
     DEFAULT_RETRY, NO_RETRY, log_and_raise,
@@ -39,6 +41,7 @@ def _build_workflow() -> StateGraph:
     )
 
     workflow.add_node("memory_recall", memory_recall_node)
+    workflow.add_node("task_manager", task_manager_node)   # 意图识别前的任务管理
     workflow.add_node("dispatcher", dispatcher_node)
     # 子图 wrapper：整图不重试、给宽松超时（避免 60s 误杀整个子图、避免重跑整图）
     workflow.add_node("travel_agent", build_travel_subgraph(),
@@ -48,11 +51,14 @@ def _build_workflow() -> StateGraph:
     workflow.add_node("chat_agent", chat_agent_node, timeout=LONG_TIMEOUT)  # 闲聊对话
     workflow.add_node("document_agent", document_agent_node,
                       retry_policy=NO_RETRY, timeout=LONG_TIMEOUT)          # 生成文件，不重试
+    workflow.add_node("artifact_store", artifact_store_node,
+                      retry_policy=NO_RETRY)                                # 产物入库，不重试
     workflow.add_node("memory_extraction", memory_extraction_node,
                       retry_policy=NO_RETRY)                                # 写库，不重试
 
     workflow.set_entry_point("memory_recall")
-    workflow.add_edge("memory_recall", "dispatcher")
+    workflow.add_edge("memory_recall", "task_manager")
+    workflow.add_edge("task_manager", "dispatcher")
 
     workflow.add_conditional_edges(
         "dispatcher",
@@ -64,20 +70,22 @@ def _build_workflow() -> StateGraph:
         },
     )
 
+    # 各 agent 出口先经 artifact_store（重要成果落库），再到 memory_extraction
     workflow.add_conditional_edges(
         "chat_agent", route_by_format,
-        {"document_agent": "document_agent", END: "memory_extraction"},
+        {"document_agent": "document_agent", END: "artifact_store"},
     )
     workflow.add_conditional_edges(
         "travel_agent", route_by_format,
-        {"document_agent": "document_agent", END: "memory_extraction"},
+        {"document_agent": "document_agent", END: "artifact_store"},
     )
     workflow.add_conditional_edges(
         "assistant_agent", route_by_format,
-        {"document_agent": "document_agent", END: "memory_extraction"},
+        {"document_agent": "document_agent", END: "artifact_store"},
     )
 
-    workflow.add_edge("document_agent", "memory_extraction")
+    workflow.add_edge("document_agent", "artifact_store")
+    workflow.add_edge("artifact_store", "memory_extraction")
     workflow.add_edge("memory_extraction", END)
 
     return workflow

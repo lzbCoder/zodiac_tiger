@@ -191,3 +191,60 @@ CREATE TABLE IF NOT EXISTS root.agent_skill_rel (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_skill_agent ON root.agent_skill_rel(agent_code);
 ALTER TABLE root.agent_skill_rel ADD COLUMN IF NOT EXISTS skill_desc TEXT NULL;
+
+-- ==================== 长任务机制（2 张表）====================
+
+-- 任务表：一个会话(session)含多个任务，跨多轮协作
+CREATE TABLE IF NOT EXISTS root.tasks (
+    id                  BIGSERIAL PRIMARY KEY,
+    task_id             VARCHAR(64) NOT NULL UNIQUE,   -- uuid，外部引用键
+    session_id          VARCHAR(64) NOT NULL,
+    user_id             VARCHAR(64) NOT NULL,
+    title               TEXT        NOT NULL,
+    task_type           VARCHAR(50),                   -- chat/travel/assistant
+    status              VARCHAR(20) NOT NULL DEFAULT 'active',  -- active/completed/archived
+    current_artifact_id VARCHAR(64),
+    created_at          TIMESTAMP   NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMP   NOT NULL DEFAULT NOW(),
+    completed_at        TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_session ON root.tasks(session_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON root.tasks(session_id, status);
+
+-- 任务产物表：支持 parent_artifact_id 版本树
+CREATE TABLE IF NOT EXISTS root.task_artifacts (
+    id                  BIGSERIAL PRIMARY KEY,
+    artifact_id         VARCHAR(64) NOT NULL UNIQUE,
+    task_id             VARCHAR(64) NOT NULL,
+    parent_artifact_id  VARCHAR(64),
+    artifact_type       VARCHAR(50),                   -- md/docx/pdf/xlsx/text
+    version             INT         NOT NULL DEFAULT 1,
+    title               TEXT,
+    content             TEXT,
+    content_summary     TEXT,
+    file_id             VARCHAR(64),                   -- 关联 file_info
+    created_at          TIMESTAMP   NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_task ON root.task_artifacts(task_id);
+
+-- ==================== 动态程序记忆（1 张表 + Milvus 集合）====================
+
+-- 程序记忆：从任务执行复盘出的可复用规则，带版本/置信/衰减
+CREATE TABLE IF NOT EXISTS root.procedural_memories (
+    id                  BIGSERIAL PRIMARY KEY,
+    memory_id           VARCHAR(64) NOT NULL UNIQUE,
+    user_id             VARCHAR(64) NOT NULL DEFAULT 'admin',
+    memory_type         VARCHAR(50),                   -- rule/pitfall/preference
+    title               TEXT,
+    content             TEXT        NOT NULL,
+    source_task_type    VARCHAR(50),
+    success_count       INT         NOT NULL DEFAULT 0,
+    failure_count       INT         NOT NULL DEFAULT 0,
+    score               FLOAT       NOT NULL DEFAULT 0.5,
+    status              SMALLINT    NOT NULL DEFAULT 1,  -- 1有效 0失效
+    hit_count           INT         NOT NULL DEFAULT 0,
+    last_hit_at         TIMESTAMP,
+    created_at          TIMESTAMP   NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMP   NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_procedural_user ON root.procedural_memories(user_id, status);

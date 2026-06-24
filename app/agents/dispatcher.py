@@ -27,6 +27,14 @@ async def dispatcher_node(state: AgentState, config: RunnableConfig) -> dict:
     chat_id = config["configurable"]["chat_id"]
     logger.info(f"[调度] intent={intent}, format={output_format or 'none'}, chat_id={chat_id}")
 
+    # 新建任务时回填 task_type（task_manager 建任务时留空，待意图识别后定型）
+    if state.get("task_action") == "NEW_TASK" and state.get("active_task_id"):
+        try:
+            from app.services import task_service
+            await task_service.set_task_type(state["active_task_id"], intent)
+        except Exception as e:
+            logger.warning(f"[调度] 回填 task_type 失败: {e}")
+
     # 每轮强制写入 generate_format：无格式时写 "none"，避免 checkpointer 跨轮残留旧值
     # 导致下游 route_by_format 读到上一轮格式而误入 document_agent。
     result: dict = {

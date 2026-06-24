@@ -77,10 +77,37 @@ def _create_episodic_collection() -> None:
     logger.info(f"集合 {settings.MILVUS_COLLECTION_EPISODIC} 创建成功 (维度={settings.MILVUS_VECTOR_DIM}, 索引已创建)")
 
 
+def _create_procedural_collection() -> None:
+    if utility.has_collection(settings.MILVUS_COLLECTION_PROCEDURAL):
+        logger.info(f"集合 {settings.MILVUS_COLLECTION_PROCEDURAL} 已存在，跳过创建")
+        return
+
+    fields = [
+        FieldSchema(name="memory_id", dtype=DataType.VARCHAR, is_primary=True, max_length=64),
+        FieldSchema(name="user_id", dtype=DataType.VARCHAR, max_length=64),
+        FieldSchema(name="source_task_type", dtype=DataType.VARCHAR, max_length=50),
+        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=settings.MILVUS_VECTOR_DIM),
+        FieldSchema(name="timestamp", dtype=DataType.INT64),
+    ]
+    schema = CollectionSchema(fields, description="程序记忆集合")
+    collection = Collection(name=settings.MILVUS_COLLECTION_PROCEDURAL, schema=schema)
+
+    index_params = {
+        "metric_type": "COSINE",
+        "index_type": "IVF_FLAT",
+        "params": {"nlist": 128},
+    }
+    collection.create_index(field_name="embedding", index_params=index_params)
+    collection.load()
+
+    logger.info(f"集合 {settings.MILVUS_COLLECTION_PROCEDURAL} 创建成功 (维度={settings.MILVUS_VECTOR_DIM}, 索引已创建)")
+
+
 def init_collection() -> None:
     """初始化所有 Milvus 集合（幂等）。"""
     _create_assistant_collection()
     _create_episodic_collection()
+    _create_procedural_collection()
 
 
 def get_assistant_collection() -> Collection:
@@ -89,3 +116,7 @@ def get_assistant_collection() -> Collection:
 
 def get_episodic_collection() -> Collection:
     return Collection(name=settings.MILVUS_COLLECTION_EPISODIC)
+
+
+def get_procedural_collection() -> Collection:
+    return Collection(name=settings.MILVUS_COLLECTION_PROCEDURAL)

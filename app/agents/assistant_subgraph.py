@@ -25,9 +25,12 @@ from app.agents.agent_utils import (
 from app.agents.error_policy import (
     DEFAULT_RETRY, NO_RETRY, log_and_raise, DEFAULT_TIMEOUT, LONG_TIMEOUT,
 )
+from app.agents.task_context import build_task_context, load_task_source_content
 
 _MAX_LOOPS = 10
 _REQUEST_TOOLS_NAME = "request_tools"
+# document_agent 支持的真实文件格式（与 document_agent.FORMAT_EXT 对齐，md 不算实体导出）
+_REAL_DOC_FORMATS = {"docx", "xlsx", "html"}
 
 
 def _compile_skills(xml_bodies: list[str]) -> str:
@@ -66,15 +69,42 @@ async def collect_task_node(state: AssistantState, config: RunnableConfig) -> di
         if hasattr(m, "type") and m.type == "human":
             user_msg = m.content
             break
+
+    # CONTINUE/SWITCH/产物改写时加载任务作用域的已有进展，注入 planner（NEW_TASK 返回 ""）
+    task_context = await build_task_context(state, config)
+
     return {
         "task": user_msg,
         "scratchpad": [HumanMessage(content=user_msg)],  # 每次任务重置 ReAct 草稿
         "react_loop_count": 0,
+        "task_context": task_context,
         "skill_context": "",
         "activated_skill_keys": [],
         "activated_tool_names": [],
         "tool_search_exhausted": False,
     }
+
+
+# ---- 节点 1.5：产物导出（ARTIFACT_OPERATION + 文件格式：绕过 ReAct，直接加载已有产物） ----
+
+async def artifact_export_node(state: AssistantState, config: RunnableConfig) -> dict:
+    """加载该任务最新产物原文写入 generate_content，交父图 route_by_format → document_agent 渲染。
+
+    不写 messages：正文（文件信息）由 document_agent 流式产出。
+    取不到源内容时发一条降级提示并结束，避免静默空回合。
+    """
+    content = await load_task_source_content(state, config)
+    if content:
+        return {"generate_content": content}
+
+    from langchain_core.callbacks import adispatch_custom_event
+    note = "未找到可导出的内容，请先生成内容后再尝试导出。"
+    try:
+        await adispatch_custom_event("doc_token", {"content": note}, config=config)
+    except Exception:
+        pass
+    # 清空格式，避免父图仍尝试用空内容生成文档
+    return {"generate_format": "none", "messages": [{"role": "ai", "content": note}]}
 
 
 # ---- 节点 2：Triage（任务复杂度判定，一次性节点，保持单字符串） ----
@@ -155,11 +185,32 @@ async def activate_skill_node(state: AssistantState, config: RunnableConfig) -> 
     else:
         skill_context = ""
 
+    # 召回程序记忆（可复用规则），与 skill_context 同位置注入 planner
+    procedural_context = await _recall_procedural(state.get("task", ""), config)
+
     return {
         "skill_context": skill_context,
         "activated_skill_keys": activated_keys,
         "_activated_skill_infos": skill_infos,
+        "procedural_context": procedural_context,
     }
+
+
+async def _recall_procedural(task: str, config: RunnableConfig) -> str:
+    """语义召回命中的程序规则，格式化为可注入 prompt 的文本段。"""
+    if not task:
+        return ""
+    try:
+        from app.services import procedural_service
+        user_id = config["configurable"].get("user_id", "admin")
+        rules = await procedural_service.recall_rules(user_id, task)
+    except Exception as e:
+        logger.warning(f"[程序记忆] 召回失败: {e}")
+        return ""
+    if not rules:
+        return ""
+    lines = "\n".join(f"- [{r.get('memory_type', 'rule')}] {r['content']}" for r in rules)
+    return f"\n\n## 可复用经验（程序记忆，供参考）\n{lines}"
 
 
 # ---- 节点 2.6：工具路由（从工具池按需筛选） ----
@@ -204,7 +255,9 @@ async def planner_node(state: AssistantState, config: RunnableConfig) -> dict:
     system_msgs = render_messages(
         "assistant_planner",
         task=state.get("task", ""),
+        task_context=state.get("task_context", ""),
         skill_context=state.get("skill_context", ""),
+        procedural_context=state.get("procedural_context", ""),
         loop=loop,
         max_loops=_MAX_LOOPS,
     )
@@ -323,6 +376,17 @@ async def answer_generator_node(state: AssistantState, config: RunnableConfig) -
 
 # ---- 路由 ----
 
+def route_after_collect(state: AssistantState) -> str:
+    """任务收集后入口路由：
+    - ARTIFACT_OPERATION 且请求了真实文件格式 → 绕过 ReAct，直接导出已有产物
+    - 其余（NEW/CONTINUE/SWITCH/产物改写）→ 正常 ReAct（带 task_context）
+    """
+    fmt = (state.get("generate_format", "") or "").lower().strip()
+    if state.get("task_action") == "ARTIFACT_OPERATION" and fmt in _REAL_DOC_FORMATS:
+        return "assistant_artifact_export"
+    return "assistant_triage"
+
+
 def route_after_planner(state: AssistantState) -> str:
     """planner 决策后路由：
     - 申请补充工具(request_tools) 且未耗尽 → tool_manager
@@ -349,6 +413,7 @@ def build_assistant_agent() -> StateGraph:
         retry_policy=DEFAULT_RETRY, error_handler=log_and_raise, timeout=DEFAULT_TIMEOUT)
 
     sub.add_node("assistant_collect_task",     collect_task_node)
+    sub.add_node("assistant_artifact_export",  artifact_export_node)
     sub.add_node("assistant_triage",           triage_node)
     sub.add_node("assistant_activate_skill",   activate_skill_node)
     sub.add_node("assistant_tool_router",      tool_router_node)
@@ -358,7 +423,11 @@ def build_assistant_agent() -> StateGraph:
     sub.add_node("assistant_answer_generator", answer_generator_node, timeout=LONG_TIMEOUT)
 
     sub.set_entry_point("assistant_collect_task")
-    sub.add_edge("assistant_collect_task",   "assistant_triage")
+    sub.add_conditional_edges("assistant_collect_task", route_after_collect, {
+        "assistant_artifact_export": "assistant_artifact_export",
+        "assistant_triage":          "assistant_triage",
+    })
+    sub.add_edge("assistant_artifact_export", END)   # 导出后交父图 route_by_format → document_agent
     sub.add_edge("assistant_triage",         "assistant_activate_skill")
     sub.add_edge("assistant_activate_skill", "assistant_tool_router")
     sub.add_edge("assistant_tool_router",    "assistant_planner")

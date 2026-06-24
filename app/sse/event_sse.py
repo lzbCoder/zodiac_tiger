@@ -16,11 +16,13 @@ INTENT_LABELS: dict[str, str] = {
 NODE_LABELS: dict[str, str] = {
     # 主流程节点
     "memory_recall":              "记忆召回",
+    "task_manager":               "任务管理",
     "dispatcher":                 "意图识别",
     "travel_agent":               "旅游规划",
     "assistant_agent":            "智能助手",
     "chat_agent":                 "对话聊天",
     "document_agent":             "文档生成",
+    "artifact_store":             "产物存储",
     "memory_extraction":          "记忆提取",
     # 旅游规划子图-内部节点
     "collect_params":             "参数提取",
@@ -31,6 +33,7 @@ NODE_LABELS: dict[str, str] = {
     "generate_plan":              "行程生成",
     # 综合助手子图-内部节点
     "assistant_collect_task":     "任务收集",
+    "assistant_artifact_export":  "产物导出",
     "assistant_triage":           "任务分析",
     "assistant_activate_skill":   "技能激活",
     "assistant_tool_router":      "工具路由",
@@ -51,6 +54,7 @@ SUB_NODE_PARENT: dict[str, str] = {
     "generate_plan":              "旅游规划",
     # 综合助手子图：子级 --> 父级
     "assistant_collect_task":     "智能助手",
+    "assistant_artifact_export":  "智能助手",
     "assistant_triage":           "智能助手",
     "assistant_activate_skill":   "智能助手",
     "assistant_tool_router":      "智能助手",
@@ -405,6 +409,13 @@ async def parse_events(stream):
         elif ev == "on_chat_model_end":
             for ae in _handle_chat_model_end(name, meta, data, state):
                 yield ae
+
+        # --- on_custom_event: document_agent 确定性文件信息流式上屏（不经 LLM） ---
+        elif ev == "on_custom_event" and name == "doc_token":
+            yield AgentEvent(
+                event_type="token", name="document_agent",
+                status="running", content=data.get("content", "") if isinstance(data, dict) else "",
+            )
 
         # --- on_tool_start/end: 工具调用 ---
         elif ev == "on_tool_start":

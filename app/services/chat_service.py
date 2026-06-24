@@ -13,6 +13,10 @@ async def create_session() -> str:
 
 
 async def delete_session(session_id: str) -> None:
+    # 先删产物（依赖 tasks 反查），再删任务，最后删对话/日志
+    from app.services import artifact_service, task_service
+    await artifact_service.delete_by_session(session_id)
+    await task_service.delete_by_session(session_id)
     async with get_db_session() as session:
         await session.execute(delete(ChatHistory).where(ChatHistory.session_id == session_id))
         await session.execute(delete(ExecutionLog).where(ExecutionLog.session_id == session_id))

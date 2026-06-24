@@ -33,6 +33,21 @@ class AgentState(MessagesState):
     is_fuzzy_intent: NotRequired[bool]
     """模糊提问标记。dispatcher 检测到"能干什么"等模糊提问时写入 True，chat_agent 据此返回能力引导。"""
 
+    active_task_id: NotRequired[str]
+    """当前焦点任务 task_id。task_manager 写入，artifact_store 据此归属产物。"""
+
+    task_action: NotRequired[str]
+    """本轮任务动作：NEW_TASK / CONTINUE_TASK / SWITCH_TASK / ARTIFACT_OPERATION。task_manager 写入。"""
+
+    current_artifact_id: NotRequired[str]
+    """当前任务最新产物 id。task_manager 读出、artifact_store 产生新版本后更新。"""
+
+    last_file_id: NotRequired[str]
+    """本轮 document_agent 生成的文件记录 id，供 artifact_store 关联产物文件。"""
+
+    procedural_context: NotRequired[str]
+    """命中的程序记忆（可复用规则）文本。activate_skill 召回写入，planner 与 skill_context 同位置注入。"""
+
     extracted_count: NotRequired[int]
     """本轮提取并保存的长期记忆条数。memory_extraction 写入，可通过 SSE 下发给前端。"""
 

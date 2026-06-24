@@ -35,6 +35,7 @@ class Settings:
     MILVUS_DATABASE: str = os.getenv("MILVUS_DATABASE", "life_agent")
     MILVUS_COLLECTION_ASSISTANT: str = os.getenv("MILVUS_COLLECTION_ASSISTANT", "assistant_vector")
     MILVUS_COLLECTION_EPISODIC: str = os.getenv("MILVUS_COLLECTION_EPISODIC", "episodic_memory")
+    MILVUS_COLLECTION_PROCEDURAL: str = os.getenv("MILVUS_COLLECTION_PROCEDURAL", "procedural_memory")
     MILVUS_VECTOR_DIM: int = int(os.getenv("MILVUS_VECTOR_DIM", "1024"))
 
     # Model
@@ -50,6 +51,14 @@ class Settings:
     # Memory tuning
     SUMMARY_TOKEN_THRESHOLD: int = int(os.getenv("SUMMARY_TOKEN_THRESHOLD", "6000"))
     MEMORY_RECALL_LIMIT: int = int(os.getenv("MEMORY_RECALL_LIMIT", "5"))
+
+    # Procedural memory（程序记忆/反思）
+    REFLECTION_TURN_INTERVAL: int = int(os.getenv("REFLECTION_TURN_INTERVAL", "10"))  # 每 N 轮触发一次反思
+    PROCEDURAL_RECALL_LIMIT: int = int(os.getenv("PROCEDURAL_RECALL_LIMIT", "3"))
+    PROCEDURAL_DEDUP_THRESHOLD: float = float(os.getenv("PROCEDURAL_DEDUP_THRESHOLD", "0.90"))  # 相似度≥此值视为同一规则，合并
+    PROCEDURAL_DECAY_DAYS: int = int(os.getenv("PROCEDURAL_DECAY_DAYS", "30"))   # 超过此天数未命中则衰减
+    PROCEDURAL_DECAY_FACTOR: float = float(os.getenv("PROCEDURAL_DECAY_FACTOR", "0.8"))
+    PROCEDURAL_MIN_SCORE: float = float(os.getenv("PROCEDURAL_MIN_SCORE", "0.2"))  # 低于此分失效
 
     # User
     DEFAULT_USER_ID: str = os.getenv("DEFAULT_USER_ID", "admin")
