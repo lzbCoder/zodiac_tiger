@@ -536,14 +536,31 @@ async def pin_session(req: PinSessionRequest):
 
 @router.delete("/chat/session")
 async def delete_session(session_id: str):
-    """删除会话（含 chat_history、execution_log、checkpoint、Redis）。"""
+    """删除会话。
+
+    Tier 1（权威数据，必须原子）：chat_history / execution_log / 任务 / 产物 / 会话主表，
+    在单个 PG 事务内删除；失败则整体回滚并返回错误，前端会话保留。
+    Tier 2（派生/缓存，best-effort）：Redis 会话键、checkpoint thread。
+    它们是可重建的附属物而非真相，清理失败仅记日志、不影响删除成功——
+    残留的孤儿数据交由后台 cleanup 回收，避免「真实数据已删却报删除失败」。"""
+    # Tier 1：权威数据原子删除，失败直接返回错误（事务已自动回滚）
     try:
         await chat_service.delete_session(session_id)
+    except Exception as e:
+        logger.error(f"删除会话权威数据失败（已回滚）: {e}")
+        return fail(message=str(e))
+
+    # Tier 2：缓存/派生数据 best-effort 清理，各自独立容错，不影响返回成功
+    try:
         r = await get_redis()
         await r.delete(f"session:{session_id}")
+    except Exception as e:
+        logger.warning(f"删除会话 Redis 键失败（已忽略，留待后台回收）: {e}")
+
+    try:
         thread_id = f"{settings.DEFAULT_USER_ID}:{session_id}"
         await delete_checkpoint_thread(thread_id)
-        return success(message="会话已删除")
     except Exception as e:
-        logger.error(f"删除会话失败: {e}")
-        return fail(message=str(e))
+        logger.warning(f"删除会话 checkpoint 失败（已忽略，留待后台回收）: {e}")
+
+    return success(message="会话已删除")

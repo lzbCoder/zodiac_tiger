@@ -43,11 +43,15 @@ async def set_session_pinned(session_id: str, pinned: bool) -> None:
 
 
 async def delete_session(session_id: str) -> None:
-    # 先删产物（依赖 tasks 反查），再删任务，最后删对话/日志/会话主表
+    """删除会话的权威数据（Tier 1）：产物、任务、对话、执行日志、会话主表
+    全部在【同一个 PostgreSQL 事务】内完成，单次 commit。
+    任一步失败则整体回滚，调用方据此报错——保证不会留下半删的中间态。
+    Redis / checkpoint 等派生数据的清理属 Tier 2，由调用方做 best-effort 处理，不在本事务内。"""
     from app.services import artifact_service, task_service
-    await artifact_service.delete_by_session(session_id)
-    await task_service.delete_by_session(session_id)
     async with get_db_session() as session:
+        # 先删产物（依赖 tasks 反查），再删任务，最后删对话/日志/会话主表
+        await artifact_service.delete_by_session_in_tx(session, session_id)
+        await task_service.delete_by_session_in_tx(session, session_id)
         await session.execute(delete(ChatHistory).where(ChatHistory.session_id == session_id))
         await session.execute(delete(ExecutionLog).where(ExecutionLog.session_id == session_id))
         await session.execute(delete(ExecutionErrorLog).where(ExecutionErrorLog.session_id == session_id))

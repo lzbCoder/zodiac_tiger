@@ -105,9 +105,7 @@ async def set_current_artifact(task_id: str, artifact_id: str) -> None:
         await session.commit()
 
 
-async def delete_by_session(session_id: str) -> None:
-    """会话删除时清理该会话所有任务（产物由 artifact_service 一并清理）。"""
+async def delete_by_session_in_tx(session, session_id: str) -> None:
+    """在调用方提供的事务内清理该会话所有任务（不提交，由调用方统一提交/回滚）。"""
     from sqlalchemy import delete
-    async with get_db_session() as session:
-        await session.execute(delete(Task).where(Task.session_id == session_id))
-        await session.commit()
+    await session.execute(delete(Task).where(Task.session_id == session_id))

@@ -53,14 +53,12 @@ async def list_versions(task_id: str) -> list[TaskArtifact]:
     return list(rows)
 
 
-async def delete_by_session(session_id: str) -> None:
-    """会话删除时清理该会话所有任务的产物。"""
-    async with get_db_session() as session:
-        task_ids = (await session.execute(
-            select(Task.task_id).where(Task.session_id == session_id)
-        )).scalars().all()
-        if task_ids:
-            await session.execute(
-                delete(TaskArtifact).where(TaskArtifact.task_id.in_(list(task_ids)))
-            )
-            await session.commit()
+async def delete_by_session_in_tx(session, session_id: str) -> None:
+    """在调用方提供的事务内清理该会话所有任务的产物（不提交，由调用方统一提交/回滚）。"""
+    task_ids = (await session.execute(
+        select(Task.task_id).where(Task.session_id == session_id)
+    )).scalars().all()
+    if task_ids:
+        await session.execute(
+            delete(TaskArtifact).where(TaskArtifact.task_id.in_(list(task_ids)))
+        )
