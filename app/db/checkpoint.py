@@ -31,6 +31,9 @@ class CheckpointRepository:
             max_size=5,
             # 连接参数：TCP keepalive 保活 + 空闲超时检测
             kwargs={
+                # AsyncPostgresSaver.setup() 的迁移含 CREATE INDEX CONCURRENTLY，
+                # 该语句不能在事务块内执行，必须 autocommit。
+                "autocommit": True,
                 "keepalives": 1,
                 "keepalives_idle": 30,      # 30s 无数据时发送 keepalive 探针
                 "keepalives_interval": 10,  # 探针间隔 10s
