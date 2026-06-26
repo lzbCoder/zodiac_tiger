@@ -65,6 +65,9 @@ class Settings:
     PROCEDURAL_DECAY_FACTOR: float = float(os.getenv("PROCEDURAL_DECAY_FACTOR", "0.8"))
     PROCEDURAL_MIN_SCORE: float = float(os.getenv("PROCEDURAL_MIN_SCORE", "0.2"))  # 低于此分失效
 
+    # 长任务管理
+    TASK_ARCHIVE_INACTIVE_DAYS: int = int(os.getenv("TASK_ARCHIVE_INACTIVE_DAYS", "30"))  # 超过此天数无活动的任务自动归档
+
     # User
     DEFAULT_USER_ID: str = os.getenv("DEFAULT_USER_ID", "admin")
 

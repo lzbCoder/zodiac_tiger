@@ -1,8 +1,8 @@
 """长任务 CRUD 服务。"""
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, and_
 
 from app.db.session import get_db_session
 from app.models.task import Task
@@ -85,6 +85,22 @@ async def update_status(task_id: str, status: str) -> None:
             update(Task).where(Task.task_id == task_id).values(**values)
         )
         await session.commit()
+
+
+async def archive_inactive_tasks(inactive_days: int) -> int:
+    """将超过 inactive_days 无活动（updated_at 过期）的任务批量归档，返回归档条数。
+
+    仅归档 active / completed 任务，已归档的跳过。
+    """
+    cutoff = datetime.now() - timedelta(days=inactive_days)
+    async with get_db_session() as session:
+        result = await session.execute(
+            update(Task)
+            .where(and_(Task.status != "archived", Task.updated_at < cutoff))
+            .values(status="archived", updated_at=datetime.now())
+        )
+        await session.commit()
+    return result.rowcount
 
 
 async def set_task_type(task_id: str, task_type: str) -> None:

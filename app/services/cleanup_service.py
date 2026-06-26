@@ -10,6 +10,7 @@ from sqlalchemy import update, and_
 from app.db.milvus import get_episodic_collection
 from app.db.session import get_db_session
 from app.models.procedural_memory import ProceduralMemory
+from app.services import task_service
 from app.config import settings
 
 _CLEANUP_INTERVAL_SECONDS = 3600  # 每小时执行一次
@@ -59,6 +60,12 @@ async def _cleanup_expired_memories():
             await _decay_procedural_memories()
         except Exception as e:
             logger.warning(f"程序记忆衰减失败: {e}")
+        try:
+            archived = await task_service.archive_inactive_tasks(settings.TASK_ARCHIVE_INACTIVE_DAYS)
+            if archived:
+                logger.info(f"长任务自动归档: {archived} 条 (超过 {settings.TASK_ARCHIVE_INACTIVE_DAYS} 天无活动)")
+        except Exception as e:
+            logger.warning(f"长任务自动归档失败: {e}")
 
 
 def start_cleanup_task():
