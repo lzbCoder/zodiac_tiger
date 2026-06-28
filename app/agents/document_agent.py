@@ -29,6 +29,8 @@ FORMAT_EXT: dict[str, str] = {
     "docx": ".docx",
     "xlsx": ".xlsx",
     "html": ".html",
+    "ppt": ".pptx",
+    "pptx": ".pptx",
 }
 
 
@@ -120,11 +122,70 @@ def _generate_html_bytes(content: str) -> bytes:
     return html.encode("utf-8")
 
 
+def _generate_pptx_bytes(content: str) -> bytes:
+    """按 markdown 标题切分幻灯片，标题下的文本/列表作为正文要点。"""
+    from pptx import Presentation
+    from pptx.util import Pt
+
+    prs = Presentation()
+    title_layout = prs.slide_layouts[0]      # 标题幻灯片
+    content_layout = prs.slide_layouts[1]    # 标题 + 内容
+
+    slides: list[tuple[str, list[str]]] = []
+    cur_title = "演示文稿"
+    cur_bullets: list[str] = []
+    has_slide = False
+
+    def _flush() -> None:
+        nonlocal cur_bullets
+        if has_slide or cur_bullets:
+            slides.append((cur_title, cur_bullets))
+        cur_bullets = []
+
+    for raw in content.split("\n"):
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if line.startswith("# ") or line.startswith("## ") or line.startswith("### "):
+            _flush()
+            cur_title = re.sub(r"^#+\s*", "", line).strip()
+            has_slide = True
+        else:
+            bullet = re.sub(r"^[-*]\s+", "", line).strip()
+            if bullet:
+                cur_bullets.append(bullet)
+    _flush()
+
+    if not slides:
+        slides = [("演示文稿", [content.strip()[:200]])]
+
+    # 首页：标题版式，用第一张幻灯片的标题作为封面标题
+    cover = prs.slides.add_slide(title_layout)
+    cover.shapes.title.text = slides[0][0]
+
+    # 其余每张：标题 + 内容版式，要点逐条成段
+    for title, bullets in slides:
+        slide = prs.slides.add_slide(content_layout)
+        slide.shapes.title.text = title
+        body = slide.placeholders[1].text_frame
+        body.clear()
+        for i, b in enumerate(bullets):
+            para = body.paragraphs[0] if i == 0 else body.add_paragraph()
+            para.text = b
+            para.font.size = Pt(18)
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
 _FILE_GENERATORS = {
     "md": _generate_md_bytes,
     "docx": _generate_docx_bytes,
     "xlsx": _generate_xlsx_bytes,
     "html": _generate_html_bytes,
+    "ppt": _generate_pptx_bytes,
+    "pptx": _generate_pptx_bytes,
 }
 
 

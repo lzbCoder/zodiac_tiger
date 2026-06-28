@@ -12,17 +12,13 @@ FILE_DIR = Path(__file__).resolve().parent.parent.parent / "files"
 os.makedirs(FILE_DIR, exist_ok=True)
 
 _TYPE_MAP: dict[str, str] = {
-    "pdf":  "PDF",
     "xlsx": "表格", "xls": "表格", "csv": "表格",
-    "png":  "图片", "jpg": "图片", "jpeg": "图片", "gif": "图片", "svg": "图片",
-    "py":   "代码", "js": "代码", "ts": "代码", "java": "代码",
-    "go":   "代码", "rs": "代码", "vue": "代码", "css": "代码",
     "html": "HTML",
     "pptx": "PPT", "ppt": "PPT",
     "docx": "文档", "doc": "文档", "txt": "文档", "md": "文档",
 }
 
-ALL_TYPES = ["PDF", "表格", "图片", "代码", "HTML", "PPT", "文档", "其他"]
+ALL_TYPES = ["表格", "HTML", "PPT", "文档", "其他"]
 
 
 def _map_type(ext: str) -> str:
