@@ -25,6 +25,7 @@ from app.skills.registry import SkillRegistry
 from app.services.cleanup_service import start_cleanup_task, stop_cleanup_task
 from app.agents.graph import build_graph, build_graph_with_checkpointer, set_agent_graph
 from app.api import chat, template, skill, mcp, file, settings as settings_router, intent_display
+from app.middleware.access_log import AccessLogMiddleware
 
 
 async def _warmup_runtime():
@@ -181,6 +182,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 访问记录中间件（解析真实客户端 IP + 落访问日志）。
+# 后于 CORS 添加 → 处于最外层，能拿到最终响应状态码。
+app.add_middleware(AccessLogMiddleware)
 
 # 注册路由
 app.include_router(chat.router, prefix="/api")

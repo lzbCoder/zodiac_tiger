@@ -80,6 +80,9 @@ class Settings:
     APP_PORT: int = int(os.getenv("APP_PORT", "8000"))
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
+    # 访问记录去重窗口（秒）：同一 IP/会话在此窗口内只记一次，默认 30 分钟
+    ACCESS_LOG_DEDUP_TTL: int = int(os.getenv("ACCESS_LOG_DEDUP_TTL", "1800"))
+
     # Skills
     SKILLS_ROOT: str = os.getenv("SKILLS_ROOT", str(_tiger_root / "skills"))
 

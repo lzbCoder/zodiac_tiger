@@ -263,3 +263,20 @@ CREATE TABLE IF NOT EXISTS root.procedural_memories (
     updated_at          TIMESTAMP   NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_procedural_user ON root.procedural_memories(user_id, status);
+
+-- 客户端访问记录表（真实客户端 IP 等，经反向代理时取自 X-Forwarded-For/X-Real-IP）
+CREATE TABLE IF NOT EXISTS root.access_log (
+    id          BIGSERIAL PRIMARY KEY,
+    client_ip   VARCHAR(64),
+    session_id  VARCHAR(64),
+    user_id     VARCHAR(64),
+    method      VARCHAR(10),
+    path        VARCHAR(500),
+    status_code INT,
+    user_agent  TEXT,
+    referer     VARCHAR(500),
+    cost_ms     BIGINT,
+    create_time TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_access_log_ip_time ON root.access_log(client_ip, create_time DESC);
+CREATE INDEX IF NOT EXISTS idx_access_log_time ON root.access_log(create_time DESC);
