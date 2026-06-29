@@ -300,6 +300,52 @@ def _handle_chat_model_stream(node: str, data: dict, tags: list, state: _ParseSt
     return []
 
 
+def _extract_tool_calls(output) -> list[dict]:
+    """从 chat_model 输出对象提取 tool_calls，兼容 AIMessage.tool_calls 与原始 additional_kwargs。
+
+    返回归一化的 [{"name": ..., "args": {...}}, ...]。
+    """
+    calls = getattr(output, "tool_calls", None) or []
+    if calls:
+        return [{"name": (c.get("name") if isinstance(c, dict) else getattr(c, "name", "")) or "",
+                 "args": (c.get("args") if isinstance(c, dict) else getattr(c, "args", {})) or {}}
+                for c in calls]
+    # 回退：解析 OpenAI 原始 tool_calls 结构（function.name + function.arguments(JSON 字符串)）
+    ak = getattr(output, "additional_kwargs", None) or {}
+    norm: list[dict] = []
+    for r in ak.get("tool_calls") or []:
+        fn = (r or {}).get("function", {}) or {}
+        nm = fn.get("name", "")
+        if not nm:
+            continue
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+        norm.append({"name": nm, "args": args})
+    return norm
+
+
+def _synthesize_tool_thinking(output) -> str:
+    """思考节点本轮无 prose（纯函数调用，content/reasoning 皆空）时，
+    用本轮 tool_calls 合成一条结构化决策摘要上屏，避免"只有图标和耗时、无思考内容"。"""
+    real: list[str] = []
+    requests: list[str] = []
+    for tc in _extract_tool_calls(output):
+        name = tc["name"]
+        if name == "request_tools":
+            cap = (tc.get("args") or {}).get("capability", "")
+            requests.append(cap or "更多能力")
+        elif name:
+            real.append(name)
+    parts: list[str] = []
+    if real:
+        parts.append("决定调用工具：" + "、".join(f"`{n}`" for n in real))
+    if requests:
+        parts.append("申请补充工具能力：" + "、".join(requests))
+    return "；".join(parts)
+
+
 def _handle_chat_model_end(name: str, meta: dict, data: dict, state: _ParseState) -> list[AgentEvent]:
     """处理 on_chat_model_end：思考节点发射 thinking(completed) 含完整内容与耗时。
 
@@ -326,6 +372,9 @@ def _handle_chat_model_end(name: str, meta: dict, data: dict, state: _ParseState
     output = data.get("output", {})
     if hasattr(output, "content"):
         content = output.content or _chunk_reasoning(output)   # 双通道：content 为空回退 reasoning
+        # 仍为空（纯函数调用轮，无任何自然语言）→ 用 tool_calls 合成结构化决策摘要
+        if not content:
+            content = _synthesize_tool_thinking(output)
     else:
         content = str(output)[:2000]
     return [AgentEvent(
