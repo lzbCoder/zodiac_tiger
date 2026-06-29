@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
-from app.schemas.chat import ChatRequest, ResumeRequest, AbortRequest, RenameSessionRequest, PinSessionRequest
+from app.schemas.chat import ChatRequest, ResumeRequest, AbortRequest, RenameSessionRequest, PinSessionRequest, DiagnoseRequest
 from app.services import chat_service
 from app.services.summary_service import summarize_and_prune, get_latest_summary
 from app.services import execution_log_service
@@ -473,6 +473,17 @@ async def get_error_log(chat_id: str):
         return success(errors)
     except Exception as e:
         logger.error(f"获取错误日志失败: {e}")
+        return fail(message=str(e))
+
+
+@router.post("/chat/diagnose")
+async def diagnose_error(req: DiagnoseRequest):
+    """对指定错误记录调用 LLM 进行 AI 诊断，结果入库并返回（支持重复诊断覆盖）。"""
+    try:
+        diagnosis = await execution_error_service.diagnose_error(req.error_id)
+        return success({"diagnosis": diagnosis})
+    except Exception as e:
+        logger.error(f"AI 诊断失败: {e}")
         return fail(message=str(e))
 
 

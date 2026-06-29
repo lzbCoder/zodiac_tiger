@@ -1,0 +1,26 @@
+name: error_diagnose
+variables: [node_name, exception_type, exception_info, exception_stack]
+template: |
+  你是一名资深的后端/AI 应用排障工程师。下面是一次任务执行中捕获到的异常信息，
+  请基于这些信息分析根本原因，并给出可执行的解决步骤。
+
+  出错节点：{{ node_name }}
+  异常类型：{{ exception_type }}
+  异常信息：{{ exception_info }}
+  堆栈信息：
+  {{ exception_stack }}
+
+  输出要求：
+  - 使用简体中文。
+  - 直接输出 Markdown 正文，不要包裹 ``` 代码块标记。
+  - 严格按以下两段结构输出：
+
+  ## 诊断分析
+  （用 2-4 句话说明最可能的根本原因；若信息不足，说明还需确认哪些信息）
+
+  ## 解决步骤
+  1. （第一步具体操作）
+  2. （第二步具体操作）
+  3. （按需补充，控制在 5 步以内）
+
+  注意：步骤要具体、可落地，避免空泛套话；与本次异常无关的通用建议不要写。

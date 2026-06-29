@@ -85,9 +85,14 @@ CREATE TABLE IF NOT EXISTS root.execution_error_log (
     exception_type          VARCHAR(100),
     exception_info          TEXT,
     exception_stack         TEXT,
+    ai_diagnosis            TEXT,
+    diagnosis_time          TIMESTAMP,
     create_time             TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_exec_err_chat_id ON root.execution_error_log(chat_id);
+-- 兼容已存在的库：补列（幂等）
+ALTER TABLE root.execution_error_log ADD COLUMN IF NOT EXISTS ai_diagnosis TEXT;
+ALTER TABLE root.execution_error_log ADD COLUMN IF NOT EXISTS diagnosis_time TIMESTAMP;
 
 -- 用户侧意图能力展示配置表
 CREATE TABLE IF NOT EXISTS root.intent_display_config (

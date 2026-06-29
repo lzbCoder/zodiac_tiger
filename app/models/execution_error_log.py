@@ -16,4 +16,6 @@ class ExecutionErrorLog(Base):
     exception_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     exception_info: Mapped[str | None] = mapped_column(Text, nullable=True)
     exception_stack: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_diagnosis: Mapped[str | None] = mapped_column(Text, nullable=True)        # AI 诊断结果（markdown 文本）
+    diagnosis_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 最近一次诊断时间
     create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

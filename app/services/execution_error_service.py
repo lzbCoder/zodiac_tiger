@@ -1,7 +1,10 @@
 import traceback
+from datetime import datetime
 
-from sqlalchemy import select
+from loguru import logger
+from sqlalchemy import select, update
 
+from app.config import settings
 from app.db.session import get_db_session
 from app.models.execution_error_log import ExecutionErrorLog
 
@@ -40,6 +43,7 @@ async def get_errors_by_chat(chat_id: str) -> list[dict]:
         result = await session.execute(stmt)
         rows = result.scalars().all()
     return [{
+        "id": r.id,
         "session_id": r.session_id,
         "chat_id": r.chat_id,
         "error_node_name": r.error_node_name,
@@ -47,5 +51,56 @@ async def get_errors_by_chat(chat_id: str) -> list[dict]:
         "exception_type": r.exception_type,
         "exception_info": r.exception_info,
         "exception_stack": r.exception_stack,
+        "ai_diagnosis": r.ai_diagnosis,
         "create_time": r.create_time.strftime("%Y-%m-%d %H:%M:%S") if r.create_time else "",
     } for r in rows]
+
+
+def _strip_code_fence(text: str) -> str:
+    """剥离 LLM 可能包裹的 ```markdown / ``` 代码块标记，返回纯正文。"""
+    text = text.strip()
+    if text.startswith("```"):
+        # 去掉首行 ```xxx
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+    return text.strip()
+
+
+async def diagnose_error(error_id: int) -> str:
+    """对指定错误行调用 LLM 进行诊断，结果写回该行并返回 markdown 文本。
+
+    重复调用即覆盖上一次诊断结果（ai_diagnosis / diagnosis_time）。
+    """
+    from app.factory.llm_factory import create_llm
+    from app.prompts.loader import render
+
+    async with get_db_session() as session:
+        row = await session.get(ExecutionErrorLog, error_id)
+        if row is None:
+            raise ValueError(f"错误记录不存在: id={error_id}")
+        node_name = row.error_node_display_name or row.error_node_name or "未知节点"
+        exception_type = row.exception_type or "未知异常"
+        exception_info = row.exception_info or ""
+        exception_stack = row.exception_stack or ""
+
+    prompt = render(
+        "error_diagnose",
+        node_name=node_name,
+        exception_type=exception_type,
+        exception_info=exception_info,
+        exception_stack=exception_stack,
+    )
+    llm = create_llm(settings.CHAT_MODEL, streaming=False)
+    resp = await llm.ainvoke(prompt)
+    diagnosis = _strip_code_fence(resp.content or "")
+
+    async with get_db_session() as session:
+        await session.execute(
+            update(ExecutionErrorLog)
+            .where(ExecutionErrorLog.id == error_id)
+            .values(ai_diagnosis=diagnosis, diagnosis_time=datetime.now())
+        )
+        await session.commit()
+    logger.info(f"AI 诊断完成并入库: error_id={error_id}, 长度={len(diagnosis)}")
+    return diagnosis

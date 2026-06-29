@@ -29,6 +29,10 @@ class PinSessionRequest(BaseModel):
     pinned: bool
 
 
+class DiagnoseRequest(BaseModel):
+    error_id: int
+
+
 class ChatHistoryItem(BaseModel):
     id: int
     session_id: str
