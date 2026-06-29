@@ -14,9 +14,6 @@ async def dispatcher_node(state: AgentState, config: RunnableConfig) -> dict:
     当前使用 LLM (qwen-turbo) 进行意图识别。
     """
 
-    a = None
-    a.name
-
     user_message = state["messages"][-1].content if state["messages"] else ""
 
     # 意图识别（调用 LLM）→ intent + format
